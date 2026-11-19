@@ -18,7 +18,7 @@ pub const Control = struct {
     pub fn addressInit(self: *Control) void {
         self.address.sun_family = c.AF_UNIX;
         self.address.sun_path[0] = 0;
-        const name = std.mem.print(self.address.sun_path[1..], "dictation-fixture-{d}", .{c.getuid()}) catch unreachable;
+        const name = std.mem.print(self.address.sun_path[1..], "dictation-{d}", .{c.getuid()}) catch unreachable;
         self.address_len = @intCast(@offsetOf(c.sockaddr_un, "sun_path") + 1 + name.len);
     }
     pub fn init(self: *Control) !void {

@@ -32,8 +32,6 @@ pub const Desktop = struct {
     failed: bool = false,
     indicator: Indicator = .idle,
     feedback_until: i64 = 0,
-    fixture_due: i64 = 0,
-    fixture_recording: bool = false,
 
     const Frame = struct { buffer: ?*c.wl_buffer = null, busy: bool = false };
     const Offer = struct {
@@ -78,7 +76,7 @@ pub const Desktop = struct {
         const region = c.wl_compositor_create_region(self.compositor) orelse return error.WaylandResource;
         c.wl_surface_set_input_region(self.surface, region);
         c.wl_region_destroy(region);
-        self.layer = c.zwlr_layer_shell_v1_get_layer_surface(self.shell, self.surface, null, c.ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "dictation-fixture") orelse return error.WaylandResource;
+        self.layer = c.zwlr_layer_shell_v1_get_layer_surface(self.shell, self.surface, null, c.ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "dictation") orelse return error.WaylandResource;
         if (c.zwlr_layer_surface_v1_add_listener(self.layer, &layer_listener, self) != 0) return error.WaylandResource;
         c.zwlr_layer_surface_v1_set_size(self.layer, width, height);
         c.zwlr_layer_surface_v1_set_anchor(self.layer, c.ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM);
@@ -131,10 +129,6 @@ pub const Desktop = struct {
         if (self.display) |v| c.wl_display_disconnect(v);
     }
 
-    pub fn recording(self: *Desktop, active: bool) void {
-        self.fixture_recording = active;
-        self.fixture_due = if (active) 0 else platform.now() + 350;
-    }
     pub fn show(self: *Desktop, state: Indicator) void {
         self.indicator = state;
         self.dirty = true;
@@ -202,6 +196,7 @@ pub const Desktop = struct {
         const color: u32 = switch (self.indicator) {
             .recording => 0xffeeeeee,
             .finalizing => 0xff6699ff,
+            .loading => 0xffcc99ff,
             .success => 0xff66dd88,
             .no_speech => 0xffffcc55,
             .failure => 0xffff6677,

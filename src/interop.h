@@ -13,3 +13,5 @@
 #include <signal.h>
 #include <time.h>
 #include <stdlib.h>
+
+#include "native.h"

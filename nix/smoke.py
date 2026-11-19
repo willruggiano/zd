@@ -6,7 +6,7 @@ import sys
 import time
 
 binary = sys.argv[1]
-address = b"\0dictation-fixture-" + str(os.getuid()).encode()
+address = b"\0dictation-" + str(os.getuid()).encode()
 
 
 def clipboard():
