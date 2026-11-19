@@ -1,0 +1,3 @@
+# Use a resident service with native integrations
+
+Use one resident Zig user service with a loaded whisper.cpp model, direct PipeWire capture, and native Wayland indicator and clipboard integration. A small toggle client lets the user's compositor or desktop shortcut launcher control the service without a compositor-specific API. This favors low surrounding runtime overhead and model reuse over the initial simplicity of chaining recorder, transcription, and clipboard utilities; it also makes the service responsible for event handling, cancellation, buffer ownership, and serving clipboard requests. Small helper programs remain acceptable if native integration proves substantially more complex for a particular task.
