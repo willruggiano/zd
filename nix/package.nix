@@ -1,3 +1,6 @@
+let
+  storage = import ./storage.nix;
+in
 {
   lib,
   stdenv,
@@ -12,14 +15,14 @@
   cudaSupport ? true,
   modelPath ? (callPackage ./models.nix { }).large-v3-turbo,
   whisperLibrary ? callPackage ./whisper.nix { inherit cudaSupport; },
-  audioSamples ? 480000,
-  deviceSlots ? 32,
-  workerStackBytes ? 8388608,
-  inferenceThreads ? 4,
-  transcriptBytes ? 1048576,
-  controlClients ? 8,
-  clipboardSlots ? 3,
-  transfers ? 8,
+  audioSamples ? storage.audioSamples.default,
+  deviceSlots ? storage.deviceSlots.default,
+  workerStackBytes ? storage.workerStackBytes.default,
+  inferenceThreads ? storage.inferenceThreads.default,
+  transcriptBytes ? storage.transcriptBytes.default,
+  controlClients ? storage.controlClients.default,
+  clipboardSlots ? storage.clipboardSlots.default,
+  transfers ? storage.transfers.default,
 }:
 let
   # Nix paths are provisioned; absolute strings deliberately remain host paths.
