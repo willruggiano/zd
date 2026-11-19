@@ -1,6 +1,6 @@
 # Voice dictation design discussion
 
-Status: product design and test seam confirmed, including configurable static-storage sizing and the Nix test split. Specification preparation is approved; application implementation has not started.
+Status: product design and test seam confirmed, including configurable static-storage sizing and the Nix test split. The first fixture-only implementation milestone is available; see [the tracer guide](tracer.md) for implemented behavior and limitations. The remainder describes the complete planned product.
 
 ## Confirmed requirements
 
