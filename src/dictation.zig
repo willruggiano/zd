@@ -1,4 +1,5 @@
 const std = @import("std");
+pub const Feedback = @import("feedback.zig").Feedback;
 pub const Indicator = enum { loading, idle, recording, finalizing, success, no_speech, failure };
 pub const Capabilities = struct { layer_shell: bool, data_control: bool };
 /// Capture callbacks carry the recording identity, even when the same device is reused.
@@ -117,6 +118,7 @@ pub fn Session(comptime capacity: usize, comptime audio_config: Windows) type {
         pub fn audio(self: *Self, capture: Capture, samples: []const f32, effects: anytype) void {
             if (!self.capturing(capture)) return;
             self.advance(effects);
+            var total_energy: f64 = 0;
             for (samples) |sample| {
                 if (self.phase != .recording) return;
                 if (!std.math.isFinite(sample)) {
@@ -134,11 +136,17 @@ pub fn Session(comptime capacity: usize, comptime audio_config: Windows) type {
                 window.len += 1;
                 const energy = @as(f64, sample) * sample;
                 window.energy += energy;
+                total_energy += energy;
                 window.quiet = if (energy < 0.000001) window.quiet + 1 else 0;
                 if (window.len == audio_config.samples or (window.len >= audio_config.min_samples and window.quiet >= audio_config.pause_samples)) {
                     self.seal();
                     self.advance(effects);
                 }
+            }
+            // Only current, validated PCM drives the meter; a failed batch must
+            // not restore recording feedback. Bound and normalize RMS for speech.
+            if (self.capturing(capture) and samples.len != 0) {
+                effects.level(@as(f32, @floatCast(@min(1, 4 * @sqrt(total_energy / @as(f64, @floatFromInt(samples.len)))))));
             }
         }
         fn seal(self: *Self) void {

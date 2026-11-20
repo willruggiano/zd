@@ -140,6 +140,7 @@ services.dictation = {
     pauseSamples = 16000;
     contextBytes = 128;
     deviceSlots = 4;
+    outputSlots = 3;
     workerStackBytes = 2097152;
     inferenceThreads = 2;
     controlClients = 4;
@@ -157,7 +158,7 @@ unreadable/incompatible model leaves the application failed, with no model or
 fixture substitution and no microphone activity. GPU unavailability separately
 allows upstream CPU fallback with a warning. Restart after repairing the file.
 
-All twelve sizing options above have the same names as package arguments. Module
+All thirteen sizing options above have the same names as package arguments. Module
 sizing is authoritative over the base package's sizing overrides. Changing it or
 the embedded model path rebuilds Zig; no runtime heap, arena, configuration parser
 or model-path command-line flag is introduced. The read-only
@@ -168,7 +169,9 @@ layout and arithmetic validation remain Zig's responsibility.
 Defaults, units, limits, multiplicities and allocation exceptions are in the
 [runtime storage ledger](runtime.md#static-storage-and-allocation-audit). In
 particular, each transcript needs session/worker/clipboard copies, while device,
-control and reader tables have their own capacities. `audioSamples` now sizes
+control, monitor and reader tables have their own capacities. `outputSlots`
+bounds simultaneous monitors (default 8). Exhaustion exits with `OutputCapacity`
+rather than silently omitting feedback; increase the setting and rebuild. `audioSamples` now sizes
 **each recycled window**, multiplied by `audioWindows`, not the whole session.
 At least two slots are required: one may remain borrowed by superseded inference
 while the others accept replacement capture. No second whole-session bank is used.
@@ -189,7 +192,10 @@ and short-tail padding, so milestone-03 measurements no longer apply. Restart
 identities/cancellation bookkeeping are included in the typed total as well. Totals
 include alignment/padding and the worker stack. The conservative main-thread stack
 budget is separately **16 KiB**, not compiler-certified. Native library/driver allocations
-are excluded, as is the separately bounded **51,200-byte** Wayland pixel backing.
+are excluded, as is Wayland pixel backing: **204,800 bytes per active output**,
+up to **1,638,400 bytes** by default or **614,400 bytes** for the three-output
+configuration above. Output/scale changes and backing lifetimes are documented in
+[reactive feedback](runtime.md#reactive-multi-monitor-feedback).
 This is not a total RSS/VRAM limit. Module types reject out-of-range or incompatible
 settings during evaluation; package compilation independently rejects invalid and
 overflowing sizes before any service can run. Future storage inputs must be added

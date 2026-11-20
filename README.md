@@ -4,12 +4,13 @@ Local voice dictation for Wayland, using Zig and whisper.cpp:
 toggle recording, speak, then toggle again to copy the transcript.
 
 Status: **bounded streaming** implements native PipeWire capture, resident
-whisper.cpp inference while recording, a Wayland indicator and final-only
-clipboard publication, including replacement capture while cancelled inference
+whisper.cpp inference while recording, reactive multi-monitor Wayland feedback
+and final-only clipboard publication, including replacement capture while cancelled inference
 unwinds and bounded, nonblocking serving of previous transcripts during new work.
 Recoverable failures preserve the clipboard and allow a fresh toggle; connection
 loss requires daemon restart. A NixOS module installs the graphical-session user
-service. Reactive multi-monitor feedback and target-GPU/desktop validation remain pending. See
+service. [Target-GPU/desktop validation](docs/validation.md) remains pending;
+cleanup follows that gate. See
 [installation](docs/installation.md),
 [build, demo, storage and tests](docs/runtime.md), or the explicitly simulated
 [fixture mode](docs/tracer.md).

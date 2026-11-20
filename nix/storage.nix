@@ -37,6 +37,12 @@
     max = 4096;
     description = "Maximum prior current-session transcript bytes used as decoder prompt context, plus one NUL byte of worker storage. Zero disables context.";
   };
+  outputSlots = {
+    default = 8;
+    min = 1;
+    max = 64;
+    description = "Concurrent Wayland outputs; two fixed 320x80 render buffers per output, separately mapped. Exhaustion is daemon-fatal rather than silent partial coverage.";
+  };
   deviceSlots = {
     default = 32;
     min = 1;

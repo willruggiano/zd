@@ -43,7 +43,7 @@ fn stop(_: c_int) callconv(.c) void {
 pub export fn main(argc: c_int, argv: [*][*:0]u8) c_int {
     _ = c.signal(c.SIGPIPE, ignore);
     if (argc == 2 and std.mem.eql(u8, std.mem.span(argv[1]), "footprint")) {
-        const output = std.mem.print(&storage.formatting, "static_bytes={d}\nalignment={d}\nsession_bytes={d}\nwayland_bytes={d}\nclipboard_bytes={d}\nclipboard_offer_bytes={d}\nclipboard_transfer_bytes={d}\ncontrol_bytes={d}\nclient_bytes={d}\ntranscript_bytes={d}\nclipboard_slots={d}\ncontrol_clients={d}\ntransfers={d}\nwayland_backing_bytes={d}\naudio_samples={d}\naudio_windows={d}\nwindow_min_samples={d}\npause_samples={d}\ncontext_bytes={d}\ndevice_slots={d}\nworker_stack_bytes={d}\ninference_threads={d}\ncapture_bytes={d}\nworker_bytes={d}\nretained_inference_windows=1\nreplacement_audio_windows={d}\noperation_bytes={d}\n", .{ @sizeOf(Storage), @alignOf(Storage), @sizeOf(@TypeOf(storage.session)), @sizeOf(wayland.Desktop), @sizeOf(wayland.Clipboard), @sizeOf(@TypeOf(storage.desktop.clipboard.offers)), @sizeOf(@TypeOf(storage.desktop.clipboard.transfers)), @sizeOf(control.Control), @sizeOf(control.Toggle), sizes.transcript_bytes, sizes.clipboard_slots, sizes.control_clients, sizes.transfers, wayland.backing_bytes, sizes.audio_samples, sizes.audio_windows, sizes.window_min_samples, sizes.pause_samples, sizes.context_bytes, sizes.device_slots, sizes.worker_stack_bytes, sizes.inference_threads, @sizeOf(audio.Capture), @sizeOf(inference.Worker), sizes.audio_windows - 1, @sizeOf(dictation.Operation) }) catch unreachable;
+        const output = std.mem.print(&storage.formatting, "static_bytes={d}\nalignment={d}\nsession_bytes={d}\nwayland_bytes={d}\nclipboard_bytes={d}\nclipboard_offer_bytes={d}\nclipboard_transfer_bytes={d}\ncontrol_bytes={d}\nclient_bytes={d}\ntranscript_bytes={d}\nclipboard_slots={d}\ncontrol_clients={d}\ntransfers={d}\nwayland_backing_bytes={d}\nwayland_backing_per_output={d}\noutput_slots={d}\nmonitor_bytes={d}\nfeedback_bytes={d}\naudio_samples={d}\naudio_windows={d}\nwindow_min_samples={d}\npause_samples={d}\ncontext_bytes={d}\ndevice_slots={d}\nworker_stack_bytes={d}\ninference_threads={d}\ncapture_bytes={d}\nworker_bytes={d}\nretained_inference_windows=1\nreplacement_audio_windows={d}\noperation_bytes={d}\n", .{ @sizeOf(Storage), @alignOf(Storage), @sizeOf(@TypeOf(storage.session)), @sizeOf(wayland.Desktop), @sizeOf(wayland.Clipboard), @sizeOf(@TypeOf(storage.desktop.clipboard.offers)), @sizeOf(@TypeOf(storage.desktop.clipboard.transfers)), @sizeOf(control.Control), @sizeOf(control.Toggle), sizes.transcript_bytes, sizes.clipboard_slots, sizes.control_clients, sizes.transfers, wayland.backing_bytes, wayland.backing_per_output, sizes.output_slots, @sizeOf(@TypeOf(storage.desktop.monitors)), @sizeOf(@TypeOf(storage.desktop.feedback)), sizes.audio_samples, sizes.audio_windows, sizes.window_min_samples, sizes.pause_samples, sizes.context_bytes, sizes.device_slots, sizes.worker_stack_bytes, sizes.inference_threads, @sizeOf(audio.Capture), @sizeOf(inference.Worker), sizes.audio_windows - 1, @sizeOf(dictation.Operation) }) catch unreachable;
         _ = c.write(1, output.ptr, output.len);
         return 0;
     }
@@ -97,7 +97,7 @@ fn daemon() !void {
         platform.diagnostic("dictation: model loading; native Wayland ready\n");
     }
     while (@atomicLoad(c.sig_atomic_t, &storage.stopping, .seq_cst) == 0) {
-        if (desktop.failed) return error.WaylandDisconnected;
+        if (desktop.failed) |reason| return reason;
         const now = platform.now();
         if (!storage.fixture) {
             storage.capture.tick();
@@ -167,6 +167,9 @@ fn daemon() !void {
 }
 
 const Effects = struct {
+    pub fn level(_: *Effects, value: f32) void {
+        storage.desktop.level(value);
+    }
     pub fn problem(_: *Effects, reason: anyerror) void {
         report(reason);
     }

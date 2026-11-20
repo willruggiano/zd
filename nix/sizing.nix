@@ -37,7 +37,13 @@ runCommand "dictation-storage-sizing" { nativeBuildInputs = [ python3 ]; } ''
       assert layout['clipboard_transfer_bytes'] >= layout['transfers'] * 4
       assert layout['clipboard_bytes'] >= layout['clipboard_offer_bytes'] + layout['clipboard_transfer_bytes']
       assert layout['wayland_bytes'] > layout['clipboard_bytes']
-  assert large['wayland_backing_bytes'] == small['wayland_backing_bytes'] == 51200
+  assert large['output_slots'] == 8 and small['output_slots'] == 1
+  assert large['wayland_backing_bytes'] == 1638400
+  assert small['wayland_backing_bytes'] == 204800
+  for layout in (large, small):
+      assert layout['wayland_backing_per_output'] == 204800
+      assert layout['monitor_bytes'] >= layout['output_slots'] * 64
+      assert layout['wayland_bytes'] >= layout['clipboard_bytes'] + layout['monitor_bytes'] + layout['feedback_bytes']
   assert large['static_bytes'] % large['alignment'] == 0
   PY
   mkdir "$out"

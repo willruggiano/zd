@@ -10,6 +10,7 @@
   pauseSamples = 16000;
   contextBytes = 128;
   deviceSlots = 4;
+  outputSlots = 3;
   workerStackBytes = 2097152;
   inferenceThreads = 2;
 }
