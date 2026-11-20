@@ -14,6 +14,9 @@ fn TestDesktop(comptime Serving: type) type {
         capture: bool = false,
         capture_id: dictation.Capture = .{ .session = 0, .source = 0 },
         indicator: dictation.Indicator = .idle,
+        volume: f32 = 0,
+        feedback: dictation.Feedback(2) = .{},
+        now: i64 = 0,
         copied: [4096]u8 = undefined,
         len: usize = 0,
         copies: usize = 0,
@@ -31,6 +34,10 @@ fn TestDesktop(comptime Serving: type) type {
         decoded_while_capturing: bool = false,
         decode_available: bool = true,
         last_problem: ?anyerror = null,
+        pub fn level(self: *@This(), value: f32) void {
+            self.volume = value;
+            self.feedback.level(value, self.now);
+        }
         pub fn defaultSource(self: *@This()) ?u64 {
             return self.default_source;
         }
@@ -58,6 +65,7 @@ fn TestDesktop(comptime Serving: type) type {
         }
         pub fn show(self: *@This(), state: dictation.Indicator) void {
             self.indicator = state;
+            self.feedback.show(state, self.now);
         }
         pub fn publish(self: *@This(), value: []const u8) bool {
             if (self.fail) return false;
@@ -1024,4 +1032,158 @@ test "inference errors discard internal text and the next session recovers with 
     app.complete(desktop.operation, "Recovered", &desktop);
     try text("Recovered", desktop.copied[0..desktop.len]);
     try equal(2, desktop.copies);
+}
+
+test "captured volume follows current recording only, including silence and obsolete PCM" {
+    var desktop: Desktop = .{};
+    var app: dictation.Session(64, .{ .samples = 16 }) = .{};
+    try app.connect(.{ .layer_shell = true, .data_control = true });
+    app.modelLoaded(true, &desktop);
+    app.toggle(&desktop);
+    const old = desktop.capture_id;
+    app.audio(old, &.{ 0.25, -0.25 }, &desktop);
+    try equal(@as(f32, 1), desktop.volume);
+    app.audio(old, &.{ 0, 0 }, &desktop);
+    try equal(@as(f32, 0), desktop.volume);
+    app.toggle(&desktop);
+    app.audio(old, &.{ 1, 1 }, &desktop);
+    try equal(@as(f32, 0), desktop.volume);
+    app.toggle(&desktop);
+    app.audio(old, &.{ 1, 1 }, &desktop);
+    try equal(@as(f32, 0), desktop.volume);
+    app.audio(desktop.capture_id, &.{0.125}, &desktop);
+    try equal(@as(f32, 0.5), desktop.volume);
+}
+
+// The public dictation feedback interface, also used by the native adapter.
+// Pixels/protocol lifetimes are independently checked by the installed consumer.
+const IndicatorIO = struct {
+    frames: [16]struct { id: u32 = 0, phase: dictation.Indicator = .idle, level: u8 = 0 } = @splat(.{}),
+    count: usize = 0,
+    blocked: bool = false,
+    pub fn draw(self: *@This(), id: u32, phase: dictation.Indicator, level: u8) bool {
+        if (self.blocked) return false;
+        self.frames[self.count] = .{ .id = id, .phase = phase, .level = level };
+        self.count += 1;
+        return true;
+    }
+};
+
+test "feedback reaches every output and current recording replaces expiring result feedback" {
+    var feedback: dictation.Feedback(2) = .{};
+    var io: IndicatorIO = .{};
+    try feedback.outputAdded(10);
+    try feedback.outputAdded(20);
+    feedback.show(.success, 0);
+    feedback.tick(899, &io);
+    try equal(2, io.count);
+    try equal(10, io.frames[0].id);
+    try equal(20, io.frames[1].id);
+    try equal(.success, io.frames[1].phase);
+    feedback.show(.recording, 899);
+    feedback.level(1, 899);
+    feedback.tick(900, &io); // old result deadline must not hide recording
+    try equal(.recording, io.frames[3].phase);
+    try equal(24, io.frames[3].level);
+    feedback.tick(1049, &io); // absent fresh PCM: no stale microphone activity
+    try equal(0, io.frames[5].level);
+    feedback.show(.finalizing, 1050);
+    feedback.level(1, 1051); // cannot animate after capture stops
+    feedback.tick(1051, &io);
+    try equal(.finalizing, io.frames[7].phase);
+    try equal(0, io.frames[7].level);
+}
+
+test "outputs reuse exact capacity and redraw only latest state after resize or backpressure" {
+    inline for (.{ 1, 2, 8 }) |capacity| {
+        var feedback: dictation.Feedback(capacity) = .{};
+        var io: IndicatorIO = .{ .blocked = true };
+        for (1..capacity + 1) |id| try feedback.outputAdded(@intCast(id));
+        try std.testing.expectError(error.OutputCapacity, feedback.outputAdded(99));
+        feedback.show(.loading, 0);
+        feedback.tick(0, &io);
+        try equal(0, io.count);
+        feedback.show(.recording, 1);
+        feedback.level(0.5, 1);
+        feedback.outputChanged(1); // scale/configure while buffers unavailable
+        feedback.outputRemoved(1);
+        try feedback.outputAdded(99);
+        io.blocked = false;
+        feedback.tick(2, &io);
+        try equal(capacity, io.count);
+        try equal(99, io.frames[0].id);
+        for (io.frames[0..io.count]) |frame| {
+            try equal(.recording, frame.phase);
+            try equal(12, frame.level);
+        }
+        feedback.tick(3, &io);
+        try equal(capacity, io.count); // no redundant repaint
+        feedback.outputChanged(99);
+        feedback.tick(4, &io);
+        try equal(capacity + 1, io.count);
+        feedback.outputRemoved(99);
+        feedback.outputChanged(99); // stale event cannot resurrect output
+        feedback.tick(5, &io);
+        try equal(capacity + 1, io.count);
+    }
+}
+
+test "all feedback phases reset volume and results expire without replay on added outputs" {
+    var feedback: dictation.Feedback(1) = .{};
+    var io: IndicatorIO = .{};
+    try feedback.outputAdded(1);
+    for ([_]dictation.Indicator{ .loading, .recording, .finalizing, .success, .no_speech, .failure }) |phase| {
+        feedback.show(phase, 0);
+        io.count = 0;
+        feedback.tick(1, &io);
+        try equal(phase, io.frames[0].phase);
+        try equal(0, io.frames[0].level);
+    }
+    feedback.outputRemoved(1);
+    feedback.tick(900, &io);
+    try feedback.outputAdded(2);
+    io.count = 0;
+    feedback.tick(901, &io);
+    try equal(.idle, io.frames[0].phase);
+}
+
+test "output capacity is configurable and rejects invalid or overflowing backing arithmetic" {
+    const Sizes = @import("config.zig").Sizes;
+    try (Sizes{ .output_slots = 1 }).validate();
+    try (Sizes{ .output_slots = 64 }).validate();
+    try std.testing.expectError(error.InvalidOutputCapacity, (Sizes{ .output_slots = 0 }).validate());
+    try std.testing.expectError(error.InvalidOutputCapacity, (Sizes{ .output_slots = 65 }).validate());
+    try std.testing.expectError(error.Overflow, (Sizes{ .output_slots = std.math.maxInt(usize) }).validate());
+}
+
+test "session volume and output changes keep recording visible through decoding and stale completions" {
+    var desktop: Desktop = .{};
+    var io: IndicatorIO = .{};
+    var app: dictation.Session(64, .{ .samples = 2 }) = .{};
+    try app.connect(.{ .layer_shell = true, .data_control = true });
+    try desktop.feedback.outputAdded(10);
+    try desktop.feedback.outputAdded(20);
+    app.modelLoaded(true, &desktop);
+    app.toggle(&desktop);
+    app.audio(desktop.capture_id, &.{ 0.25, -0.25 }, &desktop);
+    const old = desktop.operation;
+    const old_capture = desktop.capture_id;
+    desktop.feedback.tick(0, &io);
+    try equal(.recording, io.frames[1].phase);
+    try equal(24, io.frames[1].level);
+    app.toggle(&desktop);
+    desktop.feedback.tick(1, &io);
+    try equal(.finalizing, io.frames[3].phase);
+    try equal(0, io.frames[3].level);
+    app.toggle(&desktop);
+    desktop.feedback.outputRemoved(10);
+    try desktop.feedback.outputAdded(30);
+    app.audio(old_capture, &.{1}, &desktop);
+    app.complete(old, "Obsolete", &desktop);
+    desktop.feedback.tick(1000, &io);
+    try equal(30, io.frames[4].id);
+    try equal(.recording, io.frames[4].phase);
+    try equal(0, io.frames[4].level);
+    try expect(desktop.capture);
+    try equal(0, desktop.copies);
 }

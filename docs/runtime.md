@@ -7,7 +7,8 @@ is available. Restart during finalization starts replacement capture while old
 inference unwinds. Previous transcripts remain pasteable during new work,
 including bounded slow/concurrent readers and external selection takeover.
 Recoverable session failures allow a fresh toggle even while cancelled inference
-unwinds. Reactive multi-monitor feedback remains a later milestone.
+unwinds. Reactive feedback follows capture on every available monitor within the
+configured output capacity.
 CPU integration tests do not establish target-GPU throughput or recognition quality.
 
 ## Run
@@ -43,11 +44,13 @@ Wayland produces `WaylandConnection`. A missing microphone fails visibly rather
 than selecting an arbitrary source. Audio-server/compositor loss requires a daemon
 restart; see [failure and recovery](#failure-and-recovery).
 
-The native pill remains on one compositor-selected output. It is click-through,
-keyboard-noninteractive and bottom-center. Static bars distinguish loading
-(purple), recording (white), finalization (blue), success (green), no speech
-(amber) and failure (red). Result feedback lasts 900 ms. No transcript is shown,
-and publication never automatically pastes.
+The native pill is click-through, keyboard-noninteractive and bottom-center on
+**every available output**, including newly connected outputs. Five light bars
+react to current microphone volume while recording. Shapes as well as colors
+distinguish loading (purple alternating bars), recording (white reactive bars),
+finalization (blue rising bars), success (green even bars), no speech (amber short
+bars) and failure (red alternating tall bars). Result feedback lasts 900 ms.
+No transcript is shown, and publication never automatically pastes.
 
 A toggle during loading only shows loading: no microphone, no deferred recording.
 The user toggles again after readiness. Model/backend load failure stays failed
@@ -68,12 +71,11 @@ thread, so clipboard serving and toggles remain responsive.
   Such exhaustion fails visibly and never revives the superseded transcript.
   A fresh toggle after a recoverable failure also starts capture without waiting
   for an outstanding borrow; it has the same bounded headroom as a restart.
-- No multi-monitor/reactive bars yet (08).
-  No lock/suspend integration: locking does not cancel recording. Shutdown closes
+- No lock/suspend integration: locking does not cancel recording. Shutdown closes
   capture first and requests decoder abort, but waits for outstanding native work
   before releasing buffers; model initialization itself is not cancellable.
 - This is not recognition-quality, sustained-streaming or RTX 3090 acceptance.
-  Those measurements require the target desktop in milestone 09.
+  Those measurements require the [target-desktop validation](validation.md) in milestone 09.
 
 ## Dependencies and provisioning
 
@@ -142,7 +144,7 @@ completion/failure and final-only publication. Tests control external effects,
 not a duplicate state machine or private buffer layout.
 
 Effects provide `defaultSource()`, `recording(?capture_identity)`, `decode(operation, samples, context)`,
-`show`, `problem` and `publish`. Recording with `null` closes capture.
+`show`, `level`, `problem` and `publish`. Recording with `null` closes capture.
 `decode(operation, samples, context)` may retain the PCM borrow; the context is call-scoped
 and the worker copies it into fixed storage before returning. Samples remain
 immutable until inference relinquishes them and the caller delivers `complete`
@@ -321,6 +323,58 @@ response deadline. Saturation best-effort replies `busy` or disconnects; it neve
 reports copy success. A successful client reply means **toggle accepted**, not
 successful publication (including a loading refusal or a restart).
 
+### Reactive multi-monitor feedback
+
+`Feedback(output_capacity)`, exported by the dictation module, is the public
+output/time seam used by the native adapter. The session supplies phase changes
+and `level` only for validated PCM from the current capture identity. RMS is
+normalized to speech volume (four times RMS, clamped to one); the feedback stores
+only a quantized 0–24 level, not audio. Silence immediately lowers bars; no fresh
+PCM for 150 ms also lowers them. Phase changes clear volume, and late/stale capture
+cannot animate a stopped or replacement session. Background decoding leaves the
+recording phase intact. A new phase replaces the one result deadline, so an old
+900 ms timeout cannot hide new recording.
+
+- One explicitly output-bound layer surface per advertised `wl_output`, with a
+  160×40 logical-pixel pill and 24-pixel bottom margin. Keyboard interactivity is
+  NONE; the pointer input region is empty. No focus query or desktop-specific API.
+- Geometry/scale changes remain compositor managed. A fixed 2× raster (320×80)
+  with `wl_surface.set_buffer_scale(2)` keeps logical dimensions/anchors constant
+  at all scales without allocating resize queues or remapping for every change.
+  Integer 1×/2× outputs are rendered directly/downsampled; other scales may be
+  resampled by the compositor. Core compositor version 3 or newer is required.
+- Output add/configure/scale events request the **current** phase. Removal closes
+  only that surface and reuses its static slot, without changing capture or
+  clipboard ownership. All outputs may disappear and later return. A layer
+  `closed` event releases its surface; if the output remains advertised, the
+  event loop recreates it. Configure/release events on destroyed proxies cannot
+  act on reused records: libwayland discards events for destroyed proxies.
+  Output v3 or newer uses the protocol `release` request; older outputs support
+  only local proxy destruction. Layer-shell v1 has no shell `destroy` request
+  (introduced in v3), so teardown destroys its local proxy before disconnect.
+- Two buffers per output, never rewritten while busy. When both are busy or
+  configure is pending, only the latest phase/volume and a dirty flag are retained.
+  Rendering resumes after release; there is no application UI-event queue or
+  unbounded replay. Native callbacks, control and feedback run on one loop.
+- `outputSlots` (default 8, range 1–64) bounds logical output records, native
+  surface/pool/buffer records and the maximum backing footprint. Excess outputs
+  fail with `OutputCapacity`, not silent partial coverage. Native resource errors
+  and connection loss also fail through sanitized diagnostics/ordered daemon
+  teardown. Increase the capacity and rebuild before restarting; interrupted
+  recording never publishes. As with other fatal connection failures, our owned
+  clipboard cannot survive loss of its daemon without an independent manager.
+
+Each active output maps one **204,800-byte** memfd containing two ARGB8888 frames.
+The descriptor closes immediately after pool/buffer creation. Output removal or
+shutdown destroys the surface and buffer/pool proxies, then unmaps the client
+mapping. A compositor may still own its **separate** mapping/reference: the old
+file is never truncated or reused for a replacement output. Each replacement gets
+new backing. In contrast, ordinary repaint always waits for `wl_buffer.release`
+before writing a reused frame. Partial-creation failures follow the same cleanup.
+No transcript/audio or general application storage uses these mappings. This
+lifetime follows pinned Wayland 1.26.0 `wl_shm`, `wl_surface.attach` and destroyed-
+proxy dispatch behavior; it does not require the compositor to release instantly.
+
 ### Clipboard ownership and concurrent readers
 
 The session's accumulated transcript, worker result and each offered transcript
@@ -374,12 +428,18 @@ session window slots/FIFO metadata and accumulated transcript, clipboard slots/r
 server scratch, poll state, diagnostics, device records/names, metadata and SPA
 parameter scratch, tagged capture identity, bounded connection/stream error slots,
 inference configuration, job/result slot, session/window identities,
-atomic cancellation flag, fixture completion identity/deadline, bounded prompt and
+atomic cancellation flag, fixture completion identity/deadline, output IDs, per-output
+surface/pool/proxy pointers, both frame-busy records, feedback dirty flags, phase,
+volume and deadlines, bounded prompt and
 short-tail padding, pthread attributes
 and an explicitly supplied worker stack. Read-only literals/protocol tables and
 executable code are not mutable workspaces.
 
 Run the **built binary** with `footprint` to inspect the total and components.
+`monitor_bytes` and `feedback_bytes` expose both output-record tables and all
+render/volume/timer bookkeeping; these are included in `wayland_bytes` and
+`static_bytes`. `wayland_backing_bytes` is the **maximum** separate mapping size
+(`output_slots × wayland_backing_per_output`); only present outputs are mapped.
 `clipboard_bytes`, `clipboard_offer_bytes` and `clipboard_transfer_bytes` expose
 the actual serving aggregate and its tables (including padding), all already
 included in `wayland_bytes` and `static_bytes`; do not add them again.
@@ -405,6 +465,7 @@ native inference call frames. Native libraries' own threads/stacks remain extern
 | `windowMinSamples` | samples, 48,000 | 1–`audioSamples`; stop may seal a shorter tail |
 | `pauseSamples` | quiet samples, 8,000 | 1–`windowMinSamples` |
 | `contextBytes` | prompt bytes, 256 | 0–4096; worker also owns one NUL byte |
+| `outputSlots` | concurrent outputs, 8 | 1–64; two 320×80 buffers/output, separate backing |
 | `deviceSlots` | source records, 32 | 1–256; 256-byte name slots |
 | `workerStackBytes` | bytes, 8,388,608 | 1–64 MiB, multiple of 65,536 |
 | `inferenceThreads` | external decoder threads, 4 | 1–64; does not multiply application job slots |
@@ -444,8 +505,9 @@ queue retirement, stale completion, shutdown, formatting and forwarded logging:
 Genuine PipeWire object/property/converter allocations, whisper/ggml/model/GPU
 allocations, libwayland objects and libc runtime internals remain **exempt**. They
 are neither bounded by this layout nor patched to pretend they are static.
-Wayland's reused two-frame shared-memory backing is separately **51,200 bytes**,
-unmapped on teardown; it is never used for samples/transcripts or as a heap.
+Wayland backing is separately **204,800 bytes per active output**, at most
+**1,638,400 bytes** with the default eight output slots; see the lifecycle above.
+It is never used for samples/transcripts or as a heap.
 No RSS measurement or process-wide malloc trap proves this contract.
 
 Captured audio is transient; no recordings, transcript history, or content logs
@@ -475,6 +537,7 @@ nixfmt --check flake.nix nix/*.nix
 
 # Separate installed-consumer checks, never part of checkPhase:
 nix build .#cpu.passthru.tests.native-smoke --no-link -L
+nix build .#cpu.passthru.tests.indicator --no-link -L # real multi-output Sway/PipeWire, synthetic PCM
 nix build .#cpu.passthru.tests.capture-inference --no-link -L
 nix build .#cpu.passthru.tests.streaming --no-link -L
 nix build .#cpu.passthru.tests.restart --no-link -L  # explicit test-only decoder substitution
@@ -567,6 +630,14 @@ with real native startup: no capture, no fixture fallback, no clipboard replacem
 requesting GPU use: it must warn, become ready and actually transcribe the virtual
 microphone input using CPU. This validates upstream fallback and sanitized logging,
 not a CUDA device. It replaces the historical `backend-required` consumer.
+`indicator` installs a two-output-capacity CPU package and uses real headless
+Sway, PipeWire capture and model loading. Synthetic 440 Hz PCM, not user audio,
+drives the bars. Screenshots verify every output and scale/mode placement;
+protocol tracing checks no keyboard interaction and empty input regions. Repeated
+output disable/enable cycles check client mappings/descriptors, current-phase
+restoration and clipboard preservation; a third output must fail explicitly.
+There is no decoder substitution, but this check makes no recognition claim.
+Physical-desktop appearance, focus and actual pointer delivery remain 09.
 Allocation/source review is separate from all fast tests.
 
 
@@ -886,3 +957,76 @@ are unchanged; only the existing test interposer gained empty/error outcomes.
 Physical microphone, sustained CUDA performance, recognition quality and desktop
 appearance remain **09**. Reactive multi-monitor feedback is next (**08**), with
 cleanup (**10**) after target validation, not folded into recovery.
+
+### Recorded milestone-08 verification
+
+Executed on **aarch64-linux**, retaining **Zig 0.17.1**:
+
+- The initial volume regression failed with expected level 1, observed 0; the
+  native multi-output regression found only one layer surface. All **38 standard
+  Zig tests** now pass directly and through `zig build test`. Public session and
+  feedback tests cover real PCM-to-level handling, silence/stale capture, phases,
+  deadline replacement, background decoding/restart, output add/remove/change,
+  backpressure/coalescing, exact capacity/reuse and invalid/overflowing sizing.
+- ReleaseSafe development compilation and Zig/Nix formatting passed. Installed
+  default CUDA and CPU packages, including one/two/three/eight-output sizing,
+  passed the same 38 tests in their unchanged standard-runner-only `checkPhase`.
+  CUDA package construction/footprint inspection did **not** execute NVIDIA work.
+- Separate **`indicator`**, **`native-smoke`**, **`capture-inference`**,
+  **`recovery-wayland`**, **`module-config`** and **`sizing`** consumers actually
+  passed. Real CPU recognition remains independently exercised by
+  `capture-inference`; fixture smoke and adapted recovery retain their explicitly
+  documented substitutions. The NixOS session VM and the other earlier consumers
+  were **not rerun** for this slice.
+- The final `indicator` consumer passed repeatedly with real model loading,
+  PipeWire and two headless Sway outputs. Screenshots observed bars responding to
+  synthetic 440 Hz PCM on both outputs, settling after silence, and correct
+  placement after mode/2× scale changes. Five disable/enable cycles reclaimed
+  client mappings/descriptors, restored current recording feedback and preserved
+  the clipboard. A third output produced `OutputCapacity` and ordered failure.
+  Protocol traces verify explicit output binding, empty input regions, keyboard
+  interactivity NONE and output `release` requests. Source selection/readiness
+  is asserted before feeding PCM; the harness does not rely on policy timing.
+- Allocation/source and undefined-symbol self-review covered new callback,
+  rendering, timer, init/error and teardown paths. No application allocator path
+  was found. RMS uses a scalar accumulator and compiler square-root intrinsic;
+  rendering uses scalar loops over the permitted backing. Both logical and native
+  output tables are typed fields in `Storage`, not a heap hidden behind bindings.
+  The separate conservative main-stack budget remains **16 KiB**.
+
+Installed layouts (bytes; whole storage aligned to 65,536):
+
+| Component | Default CPU/CUDA | Small sizing | Installation example |
+| --- | ---: | ---: | ---: |
+| Whole `Storage` | 19,529,728 | 1,179,648 | 12,517,376 |
+| Native monitor records | 704 | 88 | 264 |
+| Logical feedback/volume/timer state | 88 | 32 | 48 |
+| Whole Wayland aggregate | 3,146,936 | 416 | 8,704 |
+| Output capacity | 8 | 1 | 3 |
+| Maximum separate pixel backing | 1,638,400 | 204,800 | 614,400 |
+
+New records consume already-accounted aggregate alignment padding, so whole
+static totals remain unchanged. The monitor/feedback columns are included in the
+Wayland and whole totals, not additional amounts. Actual mapping size depends
+on active outputs; it is separate from static application storage.
+
+#### Standards self-review
+
+Reviewed against preserved parent **`cc38c824`**, the contribution/domain/storage/
+testing rules and code-smell baseline. No blocking findings remain. Review fixed
+initial callback errors being masked by missing-protocol checks, added v3 output
+release, and avoided sending a v3 shell-destroy request on the bound v1 shell.
+Native binding/compiler dependencies and production C glue remain unchanged.
+No independent sub-agent reviewer was available.
+
+#### Spec self-review
+
+Ticket 08's reactive per-output feedback, stale-event handling, bounded storage,
+release lifecycle, configuration and separate native checks are implemented.
+The fixed 2× raster delegates other scales to the compositor rather than adding
+resize pools/queues. No blocking local findings remain; physical appearance,
+keyboard focus, pointer delivery and mixed-scale hardware acceptance remain
+explicitly **09**, not inferred from protocol traces/screenshots. The
+[target validation checklist](validation.md) records that gate as pending;
+**10 cleanup remains deferred**. This was a local self-review, not an independent
+or target-desktop acceptance review.

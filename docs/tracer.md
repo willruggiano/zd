@@ -22,8 +22,9 @@ driver to exercise it.
 
 A supporting compositor must expose layer-shell and ext-data-control-v1. The
 current indicator is a click-through, keyboard-noninteractive bottom-center pill
-on one compositor-selected output. Static bars distinguish recording/finalization
-and brief result feedback; no transcript is drawn or automatically pasted.
+on every available output within `outputSlots`. Its single synthetic PCM event
+briefly moves recording bars, then the meter settles; other phases are distinct.
+This is not a live microphone-volume demo; no transcript is drawn or automatically pasted.
 
 The daemon uses the same `dictation-<uid>` control socket as normal mode, so stop
 one daemon before starting another. SIGINT/SIGTERM shuts it down. A successful

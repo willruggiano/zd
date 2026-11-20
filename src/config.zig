@@ -11,6 +11,7 @@ pub const Sizes = struct {
     pause_samples: usize = 8000,
     context_bytes: usize = 256,
     device_slots: usize = 32,
+    output_slots: usize = 8,
     worker_stack_bytes: usize = 8388608,
     inference_threads: usize = 4,
 
@@ -19,6 +20,8 @@ pub const Sizes = struct {
     }
     pub fn validate(self: Sizes) !void {
         try self.windows().validate();
+        _ = try std.math.mul(usize, self.output_slots, @import("feedback.zig").backing_per_output);
+        if (self.output_slots == 0 or self.output_slots > 64) return error.InvalidOutputCapacity;
         _ = try std.math.mul(usize, self.transcript_bytes, try std.math.add(usize, self.clipboard_slots, 1));
         const pcm = try std.math.mul(usize, try std.math.mul(usize, self.audio_samples, self.audio_windows), @sizeOf(f32));
         _ = try std.math.add(usize, pcm, self.worker_stack_bytes);
@@ -43,6 +46,7 @@ pub const sizes: Sizes = .{
     .pause_samples = options.pause_samples,
     .context_bytes = options.context_bytes,
     .device_slots = options.device_slots,
+    .output_slots = options.output_slots,
     .worker_stack_bytes = options.worker_stack_bytes,
     .inference_threads = options.inference_threads,
 };

@@ -21,6 +21,7 @@ in
   pauseSamples ? storage.pauseSamples.default,
   contextBytes ? storage.contextBytes.default,
   deviceSlots ? storage.deviceSlots.default,
+  outputSlots ? storage.outputSlots.default,
   workerStackBytes ? storage.workerStackBytes.default,
   inferenceThreads ? storage.inferenceThreads.default,
   transcriptBytes ? storage.transcriptBytes.default,
@@ -78,6 +79,7 @@ stdenv.mkDerivation (finalAttrs: {
     pub const window_min_samples: usize = ${toString windowMinSamples};
     pub const pause_samples: usize = ${toString pauseSamples};
     pub const context_bytes: usize = ${toString contextBytes};
+    pub const output_slots: usize = ${toString outputSlots};
     pub const device_slots: usize = ${toString deviceSlots};
     pub const worker_stack_bytes: usize = ${toString workerStackBytes};
     pub const inference_threads: usize = ${toString inferenceThreads};
@@ -149,11 +151,17 @@ stdenv.mkDerivation (finalAttrs: {
           pauseSamples = 40;
           contextBytes = 16;
           deviceSlots = 2;
+          outputSlots = 1;
           workerStackBytes = 1048576;
           inferenceThreads = 1;
         };
       in
       {
+        indicator = callPackage ./smoke.nix {
+          package = cpu.override { outputSlots = 2; };
+          withCaptureTest = true;
+          withIndicatorTest = true;
+        };
         recovery-pipewire = callPackage ./smoke.nix {
           package = recovery;
           withCaptureTest = true;

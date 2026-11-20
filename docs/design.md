@@ -1,6 +1,6 @@
 # Voice dictation design discussion
 
-Status: product design and test seam confirmed, including configurable static-storage sizing and the Nix test split. Native bounded streaming, asynchronous restart, session-failure recovery and [graphical-session installation](installation.md) are available; see [the runtime guide](runtime.md) for implemented behavior, verification and limitations. The remainder describes the complete planned product.
+Status: product design and test seam confirmed, including configurable static-storage sizing and the Nix test split. Native bounded streaming, asynchronous restart, session-failure recovery, reactive multi-monitor feedback and [graphical-session installation](installation.md) are available; see [the runtime guide](runtime.md) for implemented behavior, verification and limitations. The remainder describes the complete planned product.
 
 ## Confirmed requirements
 

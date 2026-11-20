@@ -15,6 +15,8 @@
   wayland-scanner,
   wayland-protocols,
   withCaptureTest ? false,
+  withIndicatorTest ? false,
+  grim,
   withStreamingTest ? false,
   withRestartTest ? false,
   withClipboardTest ? false,
@@ -67,6 +69,8 @@ runCommand
       "dictation-native-backend-fallback"
     else if recoveryDisconnect != null then
       "dictation-native-recovery-${recoveryDisconnect}-adapted"
+    else if withIndicatorTest then
+      "dictation-native-indicator"
     else if withClipboardTest then
       "dictation-native-clipboard-adapted"
     else if withRestartTest then
@@ -82,9 +86,10 @@ runCommand
     nativeBuildInputs = [
       sway-unwrapped
       wl-clipboard
-      python3
+      (if withIndicatorTest then python3.withPackages (ps: [ ps.pillow ]) else python3)
       dbus
     ]
+    ++ lib.optionals withIndicatorTest [ grim ]
     ++ lib.optionals withCaptureTest [
       pipewire
       wireplumber
@@ -96,6 +101,7 @@ runCommand
     export XDG_RUNTIME_DIR=$TMPDIR/runtime
     mkdir -m 700 -p "$HOME" "$XDG_RUNTIME_DIR"
     export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1
+    ${lib.optionalString withIndicatorTest "export WLR_HEADLESS_OUTPUTS=2"}
     cat > sway.conf <<'CONFIG'
     output HEADLESS-1 mode 800x600
     seat seat0 fallback true
@@ -151,7 +157,7 @@ runCommand
       lib.optionalString (
         withRestartTest || withClipboardTest || recoveryDisconnect != null
       ) "LD_PRELOAD=${inferenceAdapter}/lib/libtest-inference.so"
-    } ${package}/bin/dictation daemon ${
+    } ${lib.optionalString withIndicatorTest "WAYLAND_DEBUG=client"} ${package}/bin/dictation daemon ${
       lib.optionalString (!withCaptureTest) "--fixture"
     } >daemon.log 2>&1 &
     daemon=$!
@@ -165,6 +171,8 @@ runCommand
     ${
       if expectModelFailure then
         "python3 ${./model-failure.py} ${package}/bin/dictation"
+      else if withIndicatorTest then
+        "python3 ${./indicator-smoke.py} ${package}/bin/dictation $daemon"
       else if recoveryDisconnect != null then
         "python3 ${./recovery-smoke.py} ${package}/bin/dictation ${recoveryDisconnect} $audio_server $compositor"
       else if withClipboardTest then
@@ -177,7 +185,7 @@ runCommand
         "python3 ${./smoke.py} ${package}/bin/dictation"
     }
     ${
-      if recoveryDisconnect != null then
+      if recoveryDisconnect != null || withIndicatorTest then
         ''
           status=0
           wait "$daemon" || status=$?
