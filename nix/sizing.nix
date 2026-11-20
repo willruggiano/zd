@@ -16,7 +16,10 @@ runCommand "dictation-storage-sizing" { nativeBuildInputs = [ python3 ]; } ''
   assert small['clipboard_slots'] == 2
   assert small['control_clients'] == 2
   assert small['transfers'] == 1
-  assert small['static_bytes'] < 4096
+  assert small['audio_samples'] == 160
+  assert small['device_slots'] == 2
+  assert small['worker_stack_bytes'] == 1048576
+  assert small['static_bytes'] < large['static_bytes']
   assert large['static_bytes'] > 4 * 1048576
   assert large['wayland_backing_bytes'] == small['wayland_backing_bytes'] == 51200
   assert large['static_bytes'] % large['alignment'] == 0
