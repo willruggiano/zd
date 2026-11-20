@@ -130,6 +130,13 @@ stdenv.mkDerivation (finalAttrs: {
           windowMinSamples = 160000;
           contextBytes = 128;
         };
+        recovery = cpu.override {
+          audioSamples = 16000;
+          audioWindows = 4;
+          windowMinSamples = 16000;
+          pauseSamples = 8000;
+          deviceSlots = 2;
+        };
         small = cpu.override {
           modelPath = "/nonexistent/dictation-test-model.bin";
           transcriptBytes = 64;
@@ -147,6 +154,21 @@ stdenv.mkDerivation (finalAttrs: {
         };
       in
       {
+        recovery-pipewire = callPackage ./smoke.nix {
+          package = recovery;
+          withCaptureTest = true;
+          recoveryDisconnect = "pipewire";
+        };
+        recovery-wayland = callPackage ./smoke.nix {
+          package = recovery;
+          withCaptureTest = true;
+          recoveryDisconnect = "wayland";
+        };
+        recovery-capacity = callPackage ./smoke.nix {
+          package = recovery;
+          withCaptureTest = true;
+          recoveryDisconnect = "capacity";
+        };
         clipboard = callPackage ./smoke.nix {
           package = cpu.override {
             audioSamples = 16000;

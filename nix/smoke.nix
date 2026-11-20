@@ -18,6 +18,7 @@
   withStreamingTest ? false,
   withRestartTest ? false,
   withClipboardTest ? false,
+  recoveryDisconnect ? null,
   expectModelFailure ? false,
   expectGpuFallback ? false,
 }:
@@ -35,7 +36,7 @@ let
         mkdir -p "$out/lib"
         $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared -D${
           if withClipboardTest then "DICTATION_TEST_CLIPBOARD" else "DICTATION_TEST_RESTART"
-        } \
+        } ${lib.optionalString (recoveryDisconnect != null) "-DDICTATION_TEST_RECOVERY"} \
           $(pkg-config --cflags-only-I whisper llama) ${./test-inference.c} \
           -o "$out/lib/libtest-inference.so"
       '';
@@ -64,6 +65,8 @@ runCommand
       "dictation-model-failure"
     else if expectGpuFallback then
       "dictation-native-backend-fallback"
+    else if recoveryDisconnect != null then
+      "dictation-native-recovery-${recoveryDisconnect}-adapted"
     else if withClipboardTest then
       "dictation-native-clipboard-adapted"
     else if withRestartTest then
@@ -146,7 +149,7 @@ runCommand
     printf 'Previous clipboard' | wl-copy
     ${
       lib.optionalString (
-        withRestartTest || withClipboardTest
+        withRestartTest || withClipboardTest || recoveryDisconnect != null
       ) "LD_PRELOAD=${inferenceAdapter}/lib/libtest-inference.so"
     } ${package}/bin/dictation daemon ${
       lib.optionalString (!withCaptureTest) "--fixture"
@@ -162,6 +165,8 @@ runCommand
     ${
       if expectModelFailure then
         "python3 ${./model-failure.py} ${package}/bin/dictation"
+      else if recoveryDisconnect != null then
+        "python3 ${./recovery-smoke.py} ${package}/bin/dictation ${recoveryDisconnect} $audio_server $compositor"
       else if withClipboardTest then
         "python3 ${./clipboard-smoke.py} ${package}/bin/dictation ${clipboardReader}/bin/clipboard-reader"
       else if withRestartTest then
@@ -171,8 +176,19 @@ runCommand
       else
         "python3 ${./smoke.py} ${package}/bin/dictation"
     }
-    kill -TERM "$daemon"
-    wait "$daemon"
+    ${
+      if recoveryDisconnect != null then
+        ''
+          status=0
+          wait "$daemon" || status=$?
+          test "$status" = 1
+        ''
+      else
+        ''
+          kill -TERM "$daemon"
+          wait "$daemon"
+        ''
+    }
     daemon=
     if ${package}/bin/dictation toggle 2>stopped.log; then exit 1; fi
     grep -q DaemonUnavailable stopped.log

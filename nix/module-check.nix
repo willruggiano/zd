@@ -50,6 +50,8 @@ assert unit.partOf == [ "graphical-session.target" ];
 assert unit.wants == [ "pipewire.service" ];
 assert unit.after == [ "pipewire.service" ];
 assert unit.unitConfig.ConditionEnvironment == "WAYLAND_DISPLAY";
+assert unit.serviceConfig.Restart == "on-failure";
+assert unit.serviceConfig.RestartSec == 2;
 assert enabled.services.pipewire.enable && enabled.services.pipewire.audio.enable;
 assert enabled.services.pipewire.wireplumber.enable;
 assert !(enabled.systemd.services ? dictation);

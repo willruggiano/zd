@@ -6,7 +6,8 @@ after stop and successful finalization. [NixOS graphical-session installation](i
 is available. Restart during finalization starts replacement capture while old
 inference unwinds. Previous transcripts remain pasteable during new work,
 including bounded slow/concurrent readers and external selection takeover.
-Broader recovery and reactive multi-monitor feedback remain later milestones.
+Recoverable session failures allow a fresh toggle even while cancelled inference
+unwinds. Reactive multi-monitor feedback remains a later milestone.
 CPU integration tests do not establish target-GPU throughput or recognition quality.
 
 ## Run
@@ -39,7 +40,8 @@ PipeWire's `default` metadata, and a compositor providing **layer-shell** and
 **ext-data-control-v1**. There is no compositor-specific API or clipboard fallback.
 Missing protocols produce `MissingLayerShell` / `MissingDataControl`; absent
 Wayland produces `WaylandConnection`. A missing microphone fails visibly rather
-than selecting an arbitrary source. Audio-server loss requires a daemon restart.
+than selecting an arbitrary source. Audio-server/compositor loss requires a daemon
+restart; see [failure and recovery](#failure-and-recovery).
 
 The native pill remains on one compositor-selected output. It is click-through,
 keyboard-noninteractive and bottom-center. Static bars distinguish loading
@@ -64,8 +66,8 @@ thread, so clipboard serving and toggles remain responsive.
 - Cancellation is cooperative, not GPU preemption. Replacement capture starts
   without waiting, but its bounded backlog can fill while the old decoder unwinds.
   Such exhaustion fails visibly and never revives the superseded transcript.
-  After an ordinary failure, retry still waits for any outstanding borrow to
-  return; broader recovery is milestone 07.
+  A fresh toggle after a recoverable failure also starts capture without waiting
+  for an outstanding borrow; it has the same bounded headroom as a restart.
 - No multi-monitor/reactive bars yet (08).
   No lock/suspend integration: locking does not cancel recording. Shutdown closes
   capture first and requests decoder abort, but waits for outstanding native work
@@ -139,9 +141,9 @@ readiness, `modelLoaded`, toggles, `audio`, source loss/capture failure, decoder
 completion/failure and final-only publication. Tests control external effects,
 not a duplicate state machine or private buffer layout.
 
-Effects provide `defaultSource()`, `recording(?source_id)`, `decode(samples, context)`,
+Effects provide `defaultSource()`, `recording(?capture_identity)`, `decode(operation, samples, context)`,
 `show`, `problem` and `publish`. Recording with `null` closes capture.
-`decode(samples, context)` may retain the PCM borrow; the context is call-scoped
+`decode(operation, samples, context)` may retain the PCM borrow; the context is call-scoped
 and the worker copies it into fixed storage before returning. Samples remain
 immutable until inference relinquishes them and the caller delivers `complete`
 or `inferenceFailed`. The caller then releases the external result slot and calls
@@ -149,6 +151,13 @@ or `inferenceFailed`. The caller then releases the external result slot and call
 to a still-busy worker or clearing its result before the session has consumed it.
 Publication must copy into its own bounded slot before returning. `shutdown` is called only after capture is
 closed and inference joined.
+
+Capture identities contain the session generation and selected source serial.
+`audio(identity, samples)`, `captureFailed(identity, reason)` and
+`sourceRemoved(identity)` only affect that active recording. A source serial alone
+is insufficient: the same device may be reused by the next session. Stop clears
+the active identity before finalization, so late capture events cannot invalidate
+a completed recording. Decoder terminal events keep their separate window identity.
 
 - PipeWire registry and metadata events are serviced on the daemon loop. A bounded
   node table resolves `default.audio.source` to an object serial. The session
@@ -174,6 +183,54 @@ closed and inference joined.
   reduces silence hallucinations but cannot guarantee recognizer correctness.
   Empty/whitespace results, capture/inference errors and capacity/publication
   failures preserve the clipboard.
+
+### Failure and recovery
+
+- Wholly silent sessions skip inference; empty/whitespace-only recognition gives
+  brief no-speech feedback without publishing. Pauses, silent windows and empty
+  chunks within valid speech do **not** end capture or erase committed text.
+  Trailing silence does not prevent copying an otherwise valid transcript.
+  The simple energy filter mitigates hallucinations, not a guarantee of no
+  hallucinations or correct recognition in noise.
+- Missing default microphone, failed stream start/negotiation, removal of the
+  pinned microphone, invalid PCM, inference/publication failure and storage
+  exhaustion fail the session and preserve the existing clipboard. Stream
+  diagnostics identify `MicrophoneRemoved`, `CaptureDisconnected`, `CaptureFormat`,
+  `CaptureBuffer` or `CaptureTimeout`; they never forward device/library strings.
+  Default changes never retarget a recording. A fresh toggle resolves the current
+  default again; no microphone is opened automatically when a device returns.
+- Retry after failure starts fresh capture even while cancelled inference unwinds.
+  It uses only the other audio slots, never reclaims the outstanding borrow early,
+  and never carries failed-session text into the new prompt. An obsolete capture
+  callback or decoder success/failure cannot stop, publish, report an error for,
+  or change the indicator of the replacement session. This also holds after the
+  replacement has succeeded. Ordinary stop does not turn a subsequent late
+  capture error into an inference failure.
+- Native callbacks are serialized on the main loop. Stream destruction occurs
+  only outside process callbacks, after returning the borrowed PipeWire buffer.
+  The old stream is destroyed before its identity/error slot is reused. No
+  asynchronous stream callback queue or extra session queue is introduced.
+- Lost PipeWire/Wayland connections, registry failures and exhausted device tables
+  are **daemon-fatal**, not transparent reconnects. Diagnostics report the failure
+  and ordered teardown closes capture, requests inference abort, joins the worker,
+  clears application samples/text and releases native resources. Foreground use
+  requires relaunch; the NixOS user service's existing `Restart=on-failure` retries
+  after two seconds (subject to systemd start limits). Restore dependencies first;
+  enlarge `deviceSlots` and rebuild if necessary. A restarted daemon reloads the
+  model and stays idle: it does not resume an interrupted recording.
+- Model/backend initialization failure leaves the daemon unavailable for recording
+  until restart with a usable model/backend. There is no model/fixture substitution.
+  GPU-requested readiness still allows the documented upstream CPU fallback.
+- Failure preserves the clipboard **while its owner/connection survives**. A fatal
+  daemon/compositor disconnect necessarily releases our old selection and active
+  transfers; without a clipboard manager it may no longer be pasteable. Do not
+  interpret this as publishing partial/error text, or a promise to persist the
+  clipboard across daemon/compositor restarts. An independent external selection
+  is not proactively replaced by a failure.
+- No lock/suspend hooks exist. Locking alone does not cancel capture, and suspend
+  cancellation is not guaranteed; ordinary resulting dependency errors follow
+  the same rules above. If Wayland is missing, diagnostics/exit are the feedback,
+  not a claim that an on-screen error was displayed.
 
 ### Window boundaries and transcript assembly
 
@@ -315,7 +372,8 @@ against pinned wayland-protocols 1.49's ext-data-control XML.
 `@sizeOf(Storage)` includes alignment/padding and every simultaneously live copy:
 session window slots/FIFO metadata and accumulated transcript, clipboard slots/readers/transfers, control client and
 server scratch, poll state, diagnostics, device records/names, metadata and SPA
-parameter scratch, inference configuration, job/result slot, session/window identities,
+parameter scratch, tagged capture identity, bounded connection/stream error slots,
+inference configuration, job/result slot, session/window identities,
 atomic cancellation flag, fixture completion identity/deadline, bounded prompt and
 short-tail padding, pthread attributes
 and an explicitly supplied worker stack. Read-only literals/protocol tables and
@@ -421,6 +479,9 @@ nix build .#cpu.passthru.tests.capture-inference --no-link -L
 nix build .#cpu.passthru.tests.streaming --no-link -L
 nix build .#cpu.passthru.tests.restart --no-link -L  # explicit test-only decoder substitution
 nix build .#cpu.passthru.tests.clipboard --no-link -L # real controlled Wayland readers; adapted decoder
+nix build .#cpu.passthru.tests.recovery-pipewire --no-link -L # adapted decoder; real audio-server loss
+nix build .#cpu.passthru.tests.recovery-wayland --no-link -L # adapted decoder; real compositor loss
+nix build .#cpu.passthru.tests.recovery-capacity --no-link -L # two-device table and exhaustion
 nix build .#cpu.passthru.tests.sizing --no-link -L
 nix build .#cpu.passthru.tests.model-failure --no-link -L
 nix build .#cpu.passthru.tests.backend-fallback --no-link -L
@@ -488,6 +549,17 @@ It also uses ordinary `wl-paste`/`wl-copy`, exercises external takeover, full
 source/transfer tables and reuse, and checks that old readers receive unmixed old
 text. The helper, synthetic audio, large result generator and gate are test-only;
 this is neither real recognition nor target-desktop/GPU latency evidence.
+`recovery-pipewire`, `recovery-wayland` and `recovery-capacity` run real native
+capture and headless Sway with **explicitly interposed decoding** and synthetic
+non-sensitive PCM. With only two device slots they verify default pinning, source
+removal during a held decode, immediate retry on a different source, intact old
+PCM, cancellation, silence/empty/failure preservation, repeated successful retries
+and device-record reuse. Each ends with actual PipeWire loss, compositor loss or
+device-table exhaustion respectively, requiring diagnostic failure/exit and safe
+capture teardown, not a fictitious reconnect. Real model/state initialization
+remains active; gate files and helpers are test-only. These native consumers need
+a sandbox supporting private Unix sockets, headless Sway and PipeWire, not a GPU,
+host microphone, desktop session or `/dev/kvm`. They are not recognition tests.
 `sizing` compares actual default and
 small installed binaries. `model-failure` verifies an intentionally missing model
 with real native startup: no capture, no fixture fallback, no clipboard replacement.
@@ -747,3 +819,70 @@ machine were not migrated or cleaned up. The NixOS VM was not rerun for 06.
 Physical-desktop focus/latency, real microphone, sustained target-GPU throughput
 and recognition quality remain **09**; broader recovery is **07**, reactive
 multi-monitor feedback **08**, and cleanup **10** last.
+
+### Recorded milestone-07 verification
+
+Executed on **aarch64-linux**, retaining **Zig 0.17.1**:
+
+- The initial recovery regression failed against parent `dcd41b95`: retry left
+  capture closed until failed inference returned. All **32 standard Zig tests**
+  now pass directly and through `zig build test`. Coverage includes pauses and
+  silent/empty chunks within speech, immediate retry with a retained borrow,
+  repeated failure/recovery in two audio slots, same-device stale PCM/errors,
+  stale successes/failures after replacement publication, and clean prompt context.
+  Existing loading, dependency, capacity, clipboard and restart cases still pass.
+- ReleaseSafe development compilation, Zig/Nix formatting and installed CPU and
+  default CUDA package builds passed, including the same 32 tests in `checkPhase`.
+  Building CUDA did not execute NVIDIA inference. Package `checkPhase` still runs
+  only the standard Zig suite; no source audit, script, native consumer or
+  dependency download was added there.
+- All three new **`recovery-pipewire`**, **`recovery-wayland`** and
+  **`recovery-capacity`** consumers actually passed, including a second full run.
+  Real PipeWire/Wayland and model loading, explicitly substituted decode:
+  pinned-source removal during a held call, immediate retry before old PCM is
+  released, three silence/empty/inference-error/missing-default recovery cycles,
+  four device remove/add cycles, then fatal connection or table exhaustion.
+  Native teardown and missing-dependency startup returned failure, never fixture
+  output; external clipboard ownership survived daemon loss where Wayland survived.
+  The first harness run exposed a test-fixture issue: re-setting an unchanged
+  configured default does not undo a direct metadata override. The test now
+  explicitly restores the metadata it changed; no production fallback was added.
+- Separate **`capture-inference`**, **`streaming`**, **`restart`**, **`clipboard`**,
+  **`native-smoke`**, **`model-failure`**, **`module-config`** and **`sizing`** passed.
+  Real CPU recognition was executed independently of adapted recovery/restart/
+  clipboard decoding. These are actual consumer executions, not merely evaluated
+  attributes. Module evaluation also verifies the existing on-failure/two-second
+  restart policy; adding these evaluation assertions reused the already executed
+  module consumer output, not another execution. The NixOS VM, GPU fallback
+  consumer and target hardware were not rerun for this slice; prior results are
+  not represented as new executions.
+- Allocation/lifetime and undefined-symbol review found no new application
+  allocator path. Capture identities, stream/connection error slots and session
+  state remain typed static fields. Pinned PipeWire 1.6.9 `stream.c` confirms that
+  destruction disconnects, cleans listeners and clears queued invokes before
+  freeing the stream; identity reuse occurs only afterward, outside the process
+  callback. Zig 0.17.1 scalar `std.meta.eql`, fixed `std.mem.print`, integer parsing,
+  slices and error names introduce no application heap. Diagnostics never forward
+  captured/recognized text. Native libraries and Wayland backing remain exempt.
+
+Installed layout measurements (bytes; whole storage aligned to 65,536):
+
+| Component | Default CPU sizing | Small sizing | Recovery sizing |
+| --- | ---: | ---: | ---: |
+| Whole `Storage` | 19,529,728 | 1,179,648 | 13,959,168 |
+| Session | 6,808,752 | 1,496 | 1,304,776 |
+| Capture state | 10,312 | 2,152 | 2,152 |
+
+Capture now holds a tagged identity instead of a source plus a pending removal
+record; bounded error slots replace failure booleans. The session also retains
+its active capture identity. The aggregate accounts for both copies and padding;
+no new sizing input, queue, reserve or silence-analysis workspace was introduced.
+The conservative separate main-stack budget remains **16 KiB**, not compiler-
+certified. Reused Wayland backing remains separately **51,200 bytes**.
+
+Standards/spec **self-review** against `dcd41b95` found no blocking issues; no
+independent reviewer was available. Production C glue and dependency/compiler pins
+are unchanged; only the existing test interposer gained empty/error outcomes.
+Physical microphone, sustained CUDA performance, recognition quality and desktop
+appearance remain **09**. Reactive multi-monitor feedback is next (**08**), with
+cleanup (**10**) after target validation, not folded into recovery.
