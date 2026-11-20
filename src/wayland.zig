@@ -1,10 +1,14 @@
 const std = @import("std");
 const c = @import("c");
+const protocols = @import("wayland").client;
+const wl = protocols.wl;
+const zwlr = protocols.zwlr;
+const ext = protocols.ext;
 const sizes = @import("config.zig").sizes;
 const Indicator = @import("dictation.zig").Indicator;
 const platform = @import("platform.zig");
 const clipboard = @import("clipboard.zig");
-pub const Clipboard = clipboard.Clipboard(sizes.transcript_bytes, sizes.clipboard_slots, sizes.transfers, *c.ext_data_control_source_v1);
+pub const Clipboard = clipboard.Clipboard(sizes.transcript_bytes, sizes.clipboard_slots, sizes.transfers, *ext.DataControlSourceV1);
 
 // Fixed 2x raster density: geometry/scale changes remain compositor-managed.
 // No resize-time pool or retired-frame queue is needed; logical size is 160x40.
@@ -19,48 +23,48 @@ const Feedback = @import("dictation.zig").Feedback(sizes.output_slots);
 const mime = "text/plain;charset=utf-8";
 
 pub const Desktop = struct {
-    display: ?*c.wl_display = null,
-    registry: ?*c.wl_registry = null,
-    compositor: ?*c.wl_compositor = null,
-    shm: ?*c.wl_shm = null,
-    seat: ?*c.wl_seat = null,
-    shell: ?*c.zwlr_layer_shell_v1 = null,
-    manager: ?*c.ext_data_control_manager_v1 = null,
-    device: ?*c.ext_data_control_device_v1 = null,
+    display: ?*wl.Display = null,
+    registry: ?*wl.Registry = null,
+    compositor: ?*wl.Compositor = null,
+    shm: ?*wl.Shm = null,
+    seat: ?*wl.Seat = null,
+    shell: ?*zwlr.LayerShellV1 = null,
+    manager: ?*ext.DataControlManagerV1 = null,
+    device: ?*ext.DataControlDeviceV1 = null,
     globals: [5]u32 = @splat(0),
     monitors: [sizes.output_slots]Monitor = @splat(.{}),
     feedback: Feedback = .{},
     clipboard: Clipboard = .{},
     failed: ?anyerror = null,
 
-    const Frame = struct { buffer: ?*c.wl_buffer = null, busy: bool = false };
+    const Frame = struct { buffer: ?*wl.Buffer = null, busy: bool = false };
     const Monitor = struct {
         owner: ?*Desktop = null,
         id: u32 = 0,
-        output: ?*c.wl_output = null,
-        surface: ?*c.wl_surface = null,
-        layer: ?*c.zwlr_layer_surface_v1 = null,
-        pool: ?*c.wl_shm_pool = null,
+        output: ?*wl.Output = null,
+        surface: ?*wl.Surface = null,
+        layer: ?*zwlr.LayerSurfaceV1 = null,
+        pool: ?*wl.ShmPool = null,
         pixels: ?[*]u32 = null,
         frames: [rendering.frame_count]Frame = @splat(.{}),
         configured: bool = false,
 
         fn create(self: *Monitor) !void {
             const desktop = self.owner.?;
-            self.surface = c.wl_compositor_create_surface(desktop.compositor) orelse return error.WaylandResource;
-            const region = c.wl_compositor_create_region(desktop.compositor) orelse return error.WaylandResource;
-            c.wl_surface_set_input_region(self.surface, region);
-            c.wl_region_destroy(region);
-            c.wl_surface_set_buffer_scale(self.surface, density);
-            self.layer = c.zwlr_layer_shell_v1_get_layer_surface(desktop.shell, self.surface, self.output, c.ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "dictation") orelse return error.WaylandResource;
-            if (c.zwlr_layer_surface_v1_add_listener(self.layer, &layer_listener, self) != 0) return error.WaylandResource;
-            c.zwlr_layer_surface_v1_set_size(self.layer, width / density, height / density);
-            c.zwlr_layer_surface_v1_set_anchor(self.layer, c.ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM);
-            c.zwlr_layer_surface_v1_set_margin(self.layer, 0, 0, 24, 0);
-            c.zwlr_layer_surface_v1_set_exclusive_zone(self.layer, 0);
-            c.zwlr_layer_surface_v1_set_keyboard_interactivity(self.layer, c.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
+            self.surface = desktop.compositor.?.createSurface() catch return error.WaylandResource;
+            const region = desktop.compositor.?.createRegion() catch return error.WaylandResource;
+            self.surface.?.setInputRegion(region);
+            region.destroy();
+            self.surface.?.setBufferScale(density);
+            self.layer = desktop.shell.?.getLayerSurface(self.surface.?, self.output, .overlay, "dictation") catch return error.WaylandResource;
+            self.layer.?.setListener(*Monitor, layerEvent, self);
+            self.layer.?.setSize(width / density, height / density);
+            self.layer.?.setAnchor(.{ .bottom = true });
+            self.layer.?.setMargin(0, 0, 24, 0);
+            self.layer.?.setExclusiveZone(0);
+            self.layer.?.setKeyboardInteractivity(.none);
             try self.createBacking();
-            c.wl_surface_commit(self.surface);
+            self.surface.?.commit();
         }
         fn createBacking(self: *Monitor) !void {
             const fd = c.memfd_create("dictation-indicator", c.MFD_CLOEXEC);
@@ -70,10 +74,10 @@ pub const Desktop = struct {
             const mapping = c.mmap(null, backing_per_output, c.PROT_READ | c.PROT_WRITE, c.MAP_SHARED, fd, 0);
             if (mapping == c.MAP_FAILED) return error.WaylandBacking;
             self.pixels = @ptrCast(@alignCast(mapping));
-            self.pool = c.wl_shm_create_pool(self.owner.?.shm, fd, backing_per_output) orelse return error.WaylandResource;
+            self.pool = self.owner.?.shm.?.createPool(fd, backing_per_output) catch return error.WaylandResource;
             for (&self.frames, 0..) |*frame, i| {
-                frame.buffer = c.wl_shm_pool_create_buffer(self.pool, @intCast(i * frame_bytes), width, height, width * 4, c.WL_SHM_FORMAT_ARGB8888) orelse return error.WaylandResource;
-                if (c.wl_buffer_add_listener(frame.buffer, &buffer_listener, frame) != 0) return error.WaylandResource;
+                frame.buffer = self.pool.?.createBuffer(@intCast(i * frame_bytes), width, height, width * 4, .argb8888) catch return error.WaylandResource;
+                frame.buffer.?.setListener(*Frame, bufferEvent, frame);
             }
         }
         fn closeSurface(self: *Monitor) void {
@@ -81,13 +85,13 @@ pub const Desktop = struct {
             // Destroy proxies before reusing listener slots: libwayland discards
             // their queued callbacks. munmap drops only OUR mapping; the server's
             // fd/mapping stays valid until it releases its own reference.
-            if (self.layer) |v| c.zwlr_layer_surface_v1_destroy(v);
-            if (self.surface) |v| c.wl_surface_destroy(v);
+            if (self.layer) |v| v.destroy();
+            if (self.surface) |v| v.destroy();
             for (&self.frames) |*frame| {
-                if (frame.buffer) |v| c.wl_buffer_destroy(v);
+                if (frame.buffer) |v| v.destroy();
                 frame.* = .{};
             }
-            if (self.pool) |v| c.wl_shm_pool_destroy(v);
+            if (self.pool) |v| v.destroy();
             if (self.pixels) |v| _ = c.munmap(v, backing_per_output);
             self.layer = null;
             self.surface = null;
@@ -98,25 +102,25 @@ pub const Desktop = struct {
         fn deinit(self: *Monitor) void {
             self.closeSurface();
             if (self.output) |v| {
-                if (c.wl_output_get_version(v) >= 3) c.wl_output_release(v) else c.wl_output_destroy(v);
+                if (v.getVersion() >= 3) v.release() else v.destroy();
             }
             self.* = .{};
         }
     };
     pub fn init(self: *Desktop) !void {
         c.wl_log_set_handler_client(sanitizedLog);
-        self.display = c.wl_display_connect(null) orelse return error.WaylandConnection;
-        self.registry = c.wl_display_get_registry(self.display) orelse return error.WaylandResource;
-        if (c.wl_registry_add_listener(self.registry, &registry_listener, self) != 0) return error.WaylandResource;
-        if (c.wl_display_roundtrip(self.display) < 0) return error.WaylandConnection;
+        self.display = wl.Display.connect(null) catch return error.WaylandConnection;
+        self.registry = self.display.?.getRegistry() catch return error.WaylandResource;
+        self.registry.?.setListener(*Desktop, registryEvent, self);
+        if (self.display.?.roundtrip() != .SUCCESS) return error.WaylandConnection;
         if (self.failed) |reason| return reason;
         if (self.shell == null) return error.MissingLayerShell;
         if (self.manager == null) return error.MissingDataControl;
         if (self.compositor == null or self.shm == null or self.seat == null) return error.MissingWaylandCore;
-        self.device = c.ext_data_control_manager_v1_get_data_device(self.manager, self.seat) orelse return error.WaylandResource;
-        if (c.ext_data_control_device_v1_add_listener(self.device, &device_listener, self) != 0) return error.WaylandResource;
+        self.device = self.manager.?.getDataDevice(self.seat.?) catch return error.WaylandResource;
+        self.device.?.setListener(*Desktop, deviceEvent, self);
         try self.syncOutputs();
-        if (c.wl_display_roundtrip(self.display) < 0) return error.WaylandConnection;
+        if (self.display.?.roundtrip() != .SUCCESS) return error.WaylandConnection;
         if (self.failed) |reason| return reason;
     }
 
@@ -129,15 +133,15 @@ pub const Desktop = struct {
     pub fn deinit(self: *Desktop) void {
         self.clipboard.deinit(self);
         for (&self.monitors) |*monitor| monitor.deinit();
-        if (self.device) |v| c.ext_data_control_device_v1_destroy(v);
-        if (self.manager) |v| c.ext_data_control_manager_v1_destroy(v);
+        if (self.device) |v| v.destroy();
+        if (self.manager) |v| v.destroy();
         // Bound shell v1 has no destroy request (introduced in v3).
-        if (self.shell) |v| c.wl_proxy_destroy(@ptrCast(v));
-        if (self.seat) |v| c.wl_seat_destroy(v);
-        if (self.shm) |v| c.wl_shm_destroy(v);
-        if (self.compositor) |v| c.wl_compositor_destroy(v);
-        if (self.registry) |v| c.wl_registry_destroy(v);
-        if (self.display) |v| c.wl_display_disconnect(v);
+        if (self.shell) |v| v.destroy();
+        if (self.seat) |v| v.destroy();
+        if (self.shm) |v| v.destroy();
+        if (self.compositor) |v| v.destroy();
+        if (self.registry) |v| v.destroy();
+        if (self.display) |v| v.disconnect();
     }
 
     pub fn show(self: *Desktop, state: Indicator) void {
@@ -166,9 +170,9 @@ pub const Desktop = struct {
             for (&monitor.frames, 0..) |*frame, i| {
                 if (frame.busy) continue;
                 paint(monitor.pixels.?[i * width * height ..][0 .. width * height], phase, volume);
-                c.wl_surface_attach(monitor.surface, frame.buffer, 0, 0);
-                c.wl_surface_damage(monitor.surface, 0, 0, width / density, height / density);
-                c.wl_surface_commit(monitor.surface);
+                monitor.surface.?.attach(frame.buffer, 0, 0);
+                monitor.surface.?.damage(0, 0, width / density, height / density);
+                monitor.surface.?.commit();
                 frame.busy = true;
                 return true;
             }
@@ -178,27 +182,25 @@ pub const Desktop = struct {
 
     // Native clipboard I/O boundary. All application ownership/transfer state is
     // in Clipboard, within the typed whole-program Storage aggregate.
-    pub fn create(self: *Desktop) ?*c.ext_data_control_source_v1 {
-        const source = c.ext_data_control_manager_v1_create_data_source(self.manager) orelse return null;
-        if (c.ext_data_control_source_v1_add_listener(source, &source_listener, self) != 0) {
-            c.ext_data_control_source_v1_destroy(source);
-            return null;
-        }
-        c.ext_data_control_source_v1_offer(source, mime);
-        c.ext_data_control_source_v1_offer(source, "text/plain");
+    pub fn create(self: *Desktop) ?*ext.DataControlSourceV1 {
+        const source = self.manager.?.createDataSource() catch return null;
+        source.setListener(*Desktop, sourceEvent, self);
+        source.offer(mime);
+        source.offer("text/plain");
         return source;
     }
-    pub fn select(self: *Desktop, source: *c.ext_data_control_source_v1) bool {
-        c.ext_data_control_device_v1_set_selection(self.device, source);
+    pub fn select(self: *Desktop, source: *ext.DataControlSourceV1) bool {
+        self.device.?.setSelection(source);
         // No publication acknowledgement. Success means queued, not pasted.
-        if (c.wl_display_flush(self.display) < 0 and platform.errno() != c.EAGAIN) {
+        const result = self.display.?.flush();
+        if (result != .SUCCESS and result != .AGAIN) {
             self.failed = error.WaylandDisconnected;
             return false;
         }
         return true;
     }
-    pub fn destroy(_: *Desktop, source: *c.ext_data_control_source_v1) void {
-        c.ext_data_control_source_v1_destroy(source);
+    pub fn destroy(_: *Desktop, source: *ext.DataControlSourceV1) void {
+        source.destroy();
     }
     pub fn prepare(_: *Desktop, fd: i32) bool {
         // O_NONBLOCK does not prevent regular-file/device writes from blocking.
@@ -256,11 +258,15 @@ pub const Desktop = struct {
     }
 };
 
-fn cast(comptime T: type, data: ?*anyopaque) *T {
-    return @ptrCast(@alignCast(data.?));
+// Listener userdata borrows fixed Storage records. Destroy each proxy before
+// its record can be reused; libwayland discards events for destroyed proxies.
+fn registryEvent(registry: *wl.Registry, event: wl.Registry.Event, self: *Desktop) void {
+    switch (event) {
+        .global => |value| global(self, registry, value.name, value.interface, value.version),
+        .global_remove => |value| removed(self, value.name),
+    }
 }
-fn global(data: ?*anyopaque, registry: ?*c.wl_registry, name: u32, interface: [*c]const u8, version: u32) callconv(.c) void {
-    const self = cast(Desktop, data);
+fn global(self: *Desktop, registry: *wl.Registry, name: u32, interface: [*:0]const u8, version: u32) void {
     const value = std.mem.span(interface);
     if (self.failed != null) return;
     if (std.mem.eql(u8, value, "wl_output")) {
@@ -270,32 +276,35 @@ fn global(data: ?*anyopaque, registry: ?*c.wl_registry, name: u32, interface: [*
         };
         for (&self.monitors) |*monitor| if (monitor.id == 0) {
             monitor.* = .{ .owner = self, .id = name };
-            monitor.output = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_output_interface, @min(version, 3)));
-            if (monitor.output == null or c.wl_output_add_listener(monitor.output, &output_listener, monitor) != 0) self.failed = error.WaylandResource;
+            monitor.output = registry.bind(name, wl.Output, version) catch {
+                self.failed = error.WaylandResource;
+                return;
+            };
+            monitor.output.?.setListener(*Desktop.Monitor, outputEvent, monitor);
             return;
         };
         self.failed = error.OutputCapacity;
         return;
     }
+    // bind caps the advertised version at the generated interface version.
     if (std.mem.eql(u8, value, "wl_compositor") and self.compositor == null and version >= 3) {
-        self.compositor = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_compositor_interface, @min(version, 4)));
+        self.compositor = registry.bind(name, wl.Compositor, version) catch null;
         self.globals[0] = name;
     } else if (std.mem.eql(u8, value, "wl_shm") and self.shm == null) {
-        self.shm = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_shm_interface, 1));
+        self.shm = registry.bind(name, wl.Shm, version) catch null;
         self.globals[1] = name;
     } else if (std.mem.eql(u8, value, "wl_seat") and self.seat == null) {
-        self.seat = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_seat_interface, 1));
+        self.seat = registry.bind(name, wl.Seat, version) catch null;
         self.globals[2] = name;
     } else if (std.mem.eql(u8, value, "zwlr_layer_shell_v1") and self.shell == null) {
-        self.shell = @ptrCast(c.wl_registry_bind(registry, name, &c.zwlr_layer_shell_v1_interface, 1));
+        self.shell = registry.bind(name, zwlr.LayerShellV1, version) catch null;
         self.globals[3] = name;
     } else if (std.mem.eql(u8, value, "ext_data_control_manager_v1") and self.manager == null) {
-        self.manager = @ptrCast(c.wl_registry_bind(registry, name, &c.ext_data_control_manager_v1_interface, 1));
+        self.manager = registry.bind(name, ext.DataControlManagerV1, version) catch null;
         self.globals[4] = name;
     }
 }
-fn removed(data: ?*anyopaque, _: ?*c.wl_registry, name: u32) callconv(.c) void {
-    const self = cast(Desktop, data);
+fn removed(self: *Desktop, name: u32) void {
     for (&self.monitors) |*monitor| if (monitor.id == name) {
         self.feedback.outputRemoved(name);
         monitor.deinit();
@@ -305,54 +314,48 @@ fn removed(data: ?*anyopaque, _: ?*c.wl_registry, name: u32) callconv(.c) void {
         self.failed = error.WaylandDisconnected;
     };
 }
-fn configure(data: ?*anyopaque, layer: ?*c.zwlr_layer_surface_v1, serial: u32, _: u32, _: u32) callconv(.c) void {
-    c.zwlr_layer_surface_v1_ack_configure(layer, serial);
-    const monitor = cast(Desktop.Monitor, data);
-    monitor.configured = true;
-    monitor.owner.?.feedback.outputChanged(monitor.id);
+fn layerEvent(layer: *zwlr.LayerSurfaceV1, event: zwlr.LayerSurfaceV1.Event, monitor: *Desktop.Monitor) void {
+    switch (event) {
+        .configure => |value| {
+            layer.ackConfigure(value.serial);
+            monitor.configured = true;
+            monitor.owner.?.feedback.outputChanged(monitor.id);
+        },
+        // Output removal and closed can arrive in either order. Recreate only
+        // if the registry still advertises this output on the next loop.
+        .closed => monitor.closeSurface(),
+    }
 }
-fn closed(data: ?*anyopaque, _: ?*c.zwlr_layer_surface_v1) callconv(.c) void {
-    // Output removal and closed may arrive in either order. Recreate on the
-    // next loop only if the registry still advertises this output.
-    cast(Desktop.Monitor, data).closeSurface();
+fn outputEvent(_: *wl.Output, event: wl.Output.Event, monitor: *Desktop.Monitor) void {
+    switch (event) {
+        .geometry, .mode => {},
+        .done, .scale => monitor.owner.?.feedback.outputChanged(monitor.id),
+    }
 }
-fn outputGeometry(_: ?*anyopaque, _: ?*c.wl_output, _: i32, _: i32, _: i32, _: i32, _: i32, _: [*c]const u8, _: [*c]const u8, _: i32) callconv(.c) void {}
-fn outputMode(_: ?*anyopaque, _: ?*c.wl_output, _: u32, _: i32, _: i32, _: i32) callconv(.c) void {}
-fn outputDone(data: ?*anyopaque, _: ?*c.wl_output) callconv(.c) void {
-    const monitor = cast(Desktop.Monitor, data);
-    monitor.owner.?.feedback.outputChanged(monitor.id);
+fn bufferEvent(_: *wl.Buffer, event: wl.Buffer.Event, frame: *Desktop.Frame) void {
+    switch (event) {
+        .release => frame.busy = false,
+    }
 }
-fn outputScale(data: ?*anyopaque, output: ?*c.wl_output, _: i32) callconv(.c) void {
-    outputDone(data, output);
+fn deviceEvent(_: *ext.DataControlDeviceV1, event: ext.DataControlDeviceV1.Event, self: *Desktop) void {
+    switch (event) {
+        // We only publish. Do not retain incoming offers or external text.
+        .data_offer => |value| value.id.destroy(),
+        .selection, .primary_selection => {},
+        .finished => self.failed = error.WaylandDisconnected,
+    }
 }
-const output_listener: c.wl_output_listener = .{ .geometry = outputGeometry, .mode = outputMode, .done = outputDone, .scale = outputScale, .name = null, .description = null };
-fn released(data: ?*anyopaque, _: ?*c.wl_buffer) callconv(.c) void {
-    cast(Desktop.Frame, data).busy = false;
+fn sourceEvent(source: *ext.DataControlSourceV1, event: ext.DataControlSourceV1.Event, self: *Desktop) void {
+    switch (event) {
+        .cancelled => self.clipboard.cancelled(source, self),
+        .send => |value| {
+            const requested_mime = std.mem.span(value.mime_type);
+            if (std.mem.eql(u8, requested_mime, mime) or std.mem.eql(u8, requested_mime, "text/plain")) {
+                self.clipboard.send(source, value.fd, platform.now(), self);
+            } else self.close(value.fd);
+        },
+    }
 }
-fn offered(_: ?*anyopaque, _: ?*c.ext_data_control_device_v1, offer: ?*c.ext_data_control_offer_v1) callconv(.c) void {
-    // We only publish; destroy incoming offers immediately, including external text.
-    c.ext_data_control_offer_v1_destroy(offer);
-}
-fn selection(_: ?*anyopaque, _: ?*c.ext_data_control_device_v1, _: ?*c.ext_data_control_offer_v1) callconv(.c) void {}
-fn finished(data: ?*anyopaque, _: ?*c.ext_data_control_device_v1) callconv(.c) void {
-    cast(Desktop, data).failed = error.WaylandDisconnected;
-}
-fn cancelled(data: ?*anyopaque, source: ?*c.ext_data_control_source_v1) callconv(.c) void {
-    const self = cast(Desktop, data);
-    self.clipboard.cancelled(source.?, self);
-}
-fn send(data: ?*anyopaque, source: ?*c.ext_data_control_source_v1, requested: [*c]const u8, fd: i32) callconv(.c) void {
-    const self = cast(Desktop, data);
-    const requested_mime = std.mem.span(requested);
-    if (std.mem.eql(u8, requested_mime, mime) or std.mem.eql(u8, requested_mime, "text/plain")) {
-        self.clipboard.send(source.?, fd, platform.now(), self);
-    } else self.close(fd);
-}
-const registry_listener: c.wl_registry_listener = .{ .global = global, .global_remove = removed };
-const layer_listener: c.zwlr_layer_surface_v1_listener = .{ .configure = configure, .closed = closed };
-const buffer_listener: c.wl_buffer_listener = .{ .release = released };
-const source_listener: c.ext_data_control_source_v1_listener = .{ .send = send, .cancelled = cancelled };
-const device_listener: c.ext_data_control_device_v1_listener = .{ .data_offer = offered, .selection = selection, .finished = finished, .primary_selection = selection };
 
 // va_list is passed differently on x86_64 (array decay) and aarch64 (struct).
 // Use the translated callback parameter, not the va_list typedef itself.

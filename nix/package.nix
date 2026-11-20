@@ -8,9 +8,6 @@ in
   zig,
   pkg-config,
   wayland,
-  wayland-scanner,
-  wayland-protocols,
-  wlr-protocols,
   pipewire,
   cudaSupport ? true,
   modelPath ? (callPackage ./models.nix { }).large-v3-turbo,
@@ -32,6 +29,7 @@ in
 let
   # Nix paths are provisioned; absolute strings deliberately remain host paths.
   modelFile = if builtins.isPath modelPath then builtins.path { path = modelPath; } else modelPath;
+  waylandBindings = callPackage ./wayland-bindings.nix { inherit zig; };
 in
 assert lib.assertMsg (
   stdenv.buildPlatform == stdenv.hostPlatform
@@ -49,7 +47,6 @@ stdenv.mkDerivation (finalAttrs: {
   nativeBuildInputs = [
     zig
     pkg-config
-    wayland-scanner
   ];
   buildInputs = [
     wayland
@@ -61,11 +58,7 @@ stdenv.mkDerivation (finalAttrs: {
   # pkg-config's include-directory flags when generating bindings.
   postPatch = ''
     mkdir -p generated
-    wayland-scanner client-header ${wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml generated/layer.h
-    wayland-scanner private-code ${wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml generated/layer.c
-    wayland-scanner client-header ${wayland-protocols}/share/wayland-protocols/staging/ext-data-control/ext-data-control-v1.xml generated/control.h
-    wayland-scanner private-code ${wayland-protocols}/share/wayland-protocols/staging/ext-data-control/ext-data-control-v1.xml generated/control.c
-    wayland-scanner private-code ${wayland-protocols}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml generated/xdg.c
+    cp ${waylandBindings}/wayland.zig generated/wayland.zig
     export ZIG_GLOBAL_CACHE_DIR=$PWD/.zig-cache/global
     if [ ! -s generated/c.zig ] || [ src/interop.h -nt generated/c.zig ] || [ src/native.h -nt generated/c.zig ]; then
       zig translate-c -lc $(pkg-config --cflags-only-I wayland-client libpipewire-0.3 whisper llama) -I generated src/interop.h > generated/c.zig.tmp &&
@@ -109,8 +102,8 @@ stdenv.mkDerivation (finalAttrs: {
       } -rpath $(pkg-config --variable=libdir llama) -I generated \
         -target ${stdenv.hostPlatform.parsed.cpu.name}-linux-gnu \
         --dynamic-linker ${stdenv.cc.bintools.dynamicLinker} \
-      generated/layer.c generated/control.c generated/xdg.c src/native.c \
-      --dep c -Mroot=src/main.zig -Mc=generated/c.zig -femit-bin=dictation
+      src/native.c \
+      --dep c --dep wayland -Mroot=src/main.zig -Mc=generated/c.zig -Mwayland=generated/wayland.zig -femit-bin=dictation
     runHook postBuild
   '';
   doCheck = stdenv.buildPlatform.canExecute stdenv.hostPlatform;
@@ -122,6 +115,7 @@ stdenv.mkDerivation (finalAttrs: {
   installPhase = ''
     runHook preInstall
     install -Dm755 dictation $out/bin/dictation
+    install -Dm644 ${waylandBindings}/share/licenses/zig-wayland/LICENSE $out/share/licenses/zig-wayland/LICENSE
     runHook postInstall
   '';
   passthru = {

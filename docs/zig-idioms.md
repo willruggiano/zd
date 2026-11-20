@@ -2,7 +2,8 @@
 
 These findings use Zig 0.17.1.
 They guide review of runtime modules, tests, build code and native bindings.
-They do not select a Wayland dependency or represent a complete code audit.
+They do not represent a complete code audit.
+The separate [Wayland binding decision](adr/0005-generated-zig-wayland-bindings.md) selects the protocol generator.
 
 ## Sources
 
@@ -44,6 +45,7 @@ Treat older tutorials as explanations, not current API specifications.
 
    Do not add unnecessary namespace prefixes and unclear `Manager` or `Utils` wrappers.
    Use glossary terms instead of new names for the same domain concepts.
+   Project convention: keep upstream names when you alias imported namespaces.
    Use `zig fmt`.
    The style guide also recommends approximately 100-column lines and multiline
    lists with trailing commas. Formatting alone does not make complex code easy to read.

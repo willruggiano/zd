@@ -12,6 +12,7 @@ physical-desktop results.
 
 ## Reports
 
+- [Wayland binding migration](#wayland-binding-migration)
 - [Zig research and devshell](#zig-research-and-devshell-verification)
 - [08: multi-monitor feedback](#recorded-milestone-08-verification)
 - [07: recovery](#recorded-milestone-07-verification)
@@ -21,6 +22,33 @@ physical-desktop results.
 - [04: streaming](#recorded-milestone-04-verification)
 - [03: installed session](#recorded-milestone-03-verification)
 - [02: native capture/inference](#recorded-milestone-02-verification)
+
+## Wayland binding migration
+
+These checks used Zig 0.17.1 on aarch64-linux, before the separate PipeWire wrapper cleanup.
+The [binding decision](adr/0005-generated-zig-wayland-bindings.md) records the selected approach.
+
+- The pinned `zig-wayland` generator built and processed all required protocol XML files.
+  The package and development shell used the same generated output.
+- Separate probes compiled protocol requests, typed listeners and translated logging callbacks for aarch64-linux and x86_64-linux.
+  Neither probe exercised a desktop. The x86_64 result was compilation only, not a native package build or execution.
+- The ReleaseSafe development build passed. All 38 standard Zig tests passed.
+- Separate `native-smoke`, `indicator`, `clipboard`, `recovery-wayland`, `sizing` and `module-config` consumers passed.
+  These consumers executed; their results were not only derivation evaluations.
+  Native package `checkPhase` also ran the 38 Zig tests.
+- `native-smoke` used fixture audio and inference.
+  `clipboard` and `recovery-wayland` substituted decoding while keeping capture, model loading and Wayland real.
+  `indicator` used synthetic PCM and headless Sway. It checked pixels, output capacity, repeated output changes and backing release.
+- Source review traced generated requests and dispatchers through libwayland.
+  Arguments and event payloads use bounded stack values. Listener userdata borrows records in `Storage`.
+  Native proxy allocation remains inside libwayland. Wayland pixel backing remains the separate permitted mapping resource.
+  The executable had no undefined `malloc`, `calloc` or `realloc` symbol; source review supplied the allocation evidence.
+- Default development `static_bytes` remained 19,529,728 with alignment 65,536.
+  The sizing consumer also checked non-default storage.
+- The x86_64 CPU package and development hook evaluated successfully. The hook passed `bash -n` without execution.
+- Zig/Nix formatting and separate documentation link, anchor and fence checks passed.
+
+These checks did not run the session VM, CUDA, or physical-desktop acceptance.
 
 ## Zig research and devshell verification
 
