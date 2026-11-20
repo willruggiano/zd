@@ -33,11 +33,14 @@ pub fn build(b: *std.Build) void {
     root.addImport("wayland", wayland);
     root.linkSystemLibrary("wayland-client", .{});
     root.linkSystemLibrary("libpipewire-0.3", .{});
+    // libspa exports helpers that translate-c cannot translate correctly.
+    // Its pkg-config file supplies the directory, but no linker flags.
+    const spa_dir = b.run(&.{ pkg_config, "--variable=plugindir", "libspa-0.2" });
+    root.addLibraryPath(.{ .cwd_relative = std.mem.trim(u8, spa_dir, &std.ascii.whitespace) });
+    root.linkSystemLibrary("spa", .{ .use_pkg_config = .no });
     root.linkSystemLibrary("whisper", .{});
     // nixpkgs exposes the system ggml headers/library directory via llama.pc.
     root.linkSystemLibrary("llama", .{});
-    root.addIncludePath(b.path("generated"));
-    root.addCSourceFiles(.{ .files = &.{"src/native.c"}, .flags = &.{} });
     const exe = b.addExecutable(.{ .name = "dictation", .root_module = root });
     // CUDA libraries need the host driver outside the build sandbox.
     // Keep direct application symbols strict, including when this option is set.

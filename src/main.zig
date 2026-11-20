@@ -161,7 +161,7 @@ fn daemon() !void {
         storage.pollfds = .{
             .{ .fd = display.getFd(), .events = @intCast(c.POLLIN | @as(c_int, if (flushed == .AGAIN) c.POLLOUT else 0)), .revents = 0 },
             .{ .fd = server.listener, .events = c.POLLIN, .revents = 0 },
-            .{ .fd = if (storage.fixture) -1 else c.zd_loop_fd(storage.capture.loop), .events = c.POLLIN, .revents = 0 },
+            .{ .fd = if (storage.fixture) -1 else c.pw_loop_get_fd(storage.capture.loop), .events = c.POLLIN, .revents = 0 },
         };
         const polled = c.poll(&storage.pollfds, storage.pollfds.len, 20);
         if (polled > 0 and storage.pollfds[0].revents & c.POLLIN != 0) {

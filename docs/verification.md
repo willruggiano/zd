@@ -12,6 +12,7 @@ physical-desktop results.
 
 ## Reports
 
+- [PipeWire glue cleanup](#pipewire-glue-cleanup)
 - [Zig-owned Wayland build](#zig-owned-wayland-build)
 - [Wayland binding migration](#wayland-binding-migration)
 - [Zig research and devshell](#zig-research-and-devshell-verification)
@@ -23,6 +24,53 @@ physical-desktop results.
 - [04: streaming](#recorded-milestone-04-verification)
 - [03: installed session](#recorded-milestone-03-verification)
 - [02: native capture/inference](#recorded-milestone-02-verification)
+
+## PipeWire glue cleanup
+
+The review used Zig 0.17.1 and the packaged PipeWire 1.6.9 headers and libraries.
+It compared direct native calls with
+[`allyourcodebase/pipewire` at `a91b2b6`](https://github.com/allyourcodebase/pipewire/tree/a91b2b6a1f96cec8c6caad0f8948717d90d4834e).
+That candidate builds a static PipeWire 1.6.3 client and substitutes module loading and filesystem operations.
+Its source also compiles upstream SPA implementations to support translated declarations.
+The review did not build that candidate.
+The cleanup retained the packaged client and its dynamic module loading.
+The existing SPA library supplied the remaining helpers without a custom parser or POD implementation.
+
+- The development build and all 38 standard Zig tests passed on aarch64-linux.
+- Separate standard-runner probes passed for relaxed and escaped metadata names, missing names, and exact metadata and POD capacity boundaries.
+  SPA checks encoded token length against metadata capacity, not only decoded string length.
+- Architecture-specific C translation and complete application object compilation passed for aarch64-linux and x86_64-linux.
+  These object checks did not link or execute the application.
+- Source review covered the removed wrappers and their replacements, including initialization, callbacks, failure and teardown.
+  Generated interface calls retained borrowed userdata. POD construction retained caller storage without overflow allocation callbacks.
+  The change added no application allocation path or persistent workspace.
+  Parser and builder values remained bounded stack values within the existing source-reviewed budget.
+- The installed CPU footprint remained 19,529,728 bytes with 65,536-byte alignment.
+  ELF inspection confirmed the SPA dependency and its Nix library path.
+  Undefined-symbol inspection found no `malloc`, `calloc` or `realloc` reference.
+  That symbol check supplemented source review; it did not replace the allocation audit.
+- All thirteen selected consumers executed successfully:
+  `capture-inference`, `streaming`, `restart`, `recovery-pipewire`, `recovery-capacity`,
+  `native-smoke`, `indicator`, `clipboard`, `recovery-wayland`, `backend-fallback`,
+  `model-failure`, `sizing` and `module-config`.
+  Their package builds ran the 38 standard Zig tests; consumers reused shared package outputs.
+- Recovery consumers also checked malformed, missing, over-capacity, relaxed and escaped default-source metadata.
+  The final tests restored a valid default before each invalid value.
+  Separate reruns passed for the two consumers that preceded that stronger assertion.
+- An earlier run stopped at `pw-dump` during initial virtual-source discovery, before its capacity scenario.
+  The timeout did not recur in these runs. Its cause remained unconfirmed.
+  No timeout or assertion was relaxed to obtain these results.
+- The default CUDA-linked package built successfully. No GPU execution occurred.
+  The TCG installed-session VM booted and passed; its script completed in 641.47 seconds.
+- Fixture smoke substituted audio and inference.
+  Restart, clipboard, recovery and VM consumers substituted decoding while retaining real capture, model loading and Wayland.
+  Capture/inference and streaming consumers used real CPU recognition.
+  Indicator checks used synthetic PCM and headless Sway. Backend fallback used a CPU-only library.
+- The x86_64 CPU/default derivations and development hook evaluated successfully; the hook passed `bash -n`.
+  No x86_64 package link or native execution occurred.
+  Formatting and separate documentation checks also passed.
+
+These results do not establish physical-desktop or GPU acceptance.
 
 ## Zig-owned Wayland build
 

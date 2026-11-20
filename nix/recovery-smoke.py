@@ -159,6 +159,36 @@ for _ in range(3):
     default("test-mic-b")
     successful_reply()
 
+# Metadata failures clear the old default instead of silently selecting it.
+for value in ('{"name":', '{"other":"test-mic-b"}', json.dumps({"name": "x" * 256})):
+    previous = clipboard()
+    failed = log().count("session failed")
+    unavailable = log().count("DefaultMicrophoneUnavailable")
+    # Set a valid default before each invalid value.
+    for metadata in ('{"name":"test-mic-b"}', value):
+        subprocess.run(["pw-metadata", "-n", "default", "0", "default.audio.source",
+                        metadata, "Spa:String:JSON"], check=True)
+        time.sleep(0.3)
+    toggle()
+    eventually(lambda: log().count("session failed") == failed + 1)
+    assert log().count("DefaultMicrophoneUnavailable") == unavailable + 1
+    assert node("dictation.capture") is None
+    assert clipboard() == previous
+
+# SPA accepts relaxed syntax and escaped names. A strict JSON replacement would change this contract.
+for value in ('{ name = test-mic-b }', r'{"name":"test-mic-\u0062"}'):
+    subprocess.run(["pw-metadata", "-n", "default", "0", "default.audio.source",
+                    value, "Spa:String:JSON"], check=True)
+    time.sleep(0.3)
+    previous = clipboard()
+    no_speech = log().count("dictation: no speech")
+    start()
+    assert str(node("dictation.capture")["info"]["props"]["target.object"]) == str(
+        node("test-mic-b")["info"]["props"]["object.serial"])
+    stop()
+    eventually(lambda: log().count("dictation: no speech") == no_speech + 1)
+    assert clipboard() == previous
+
 # Repeated removal/addition recycles the second device slot rather than growing it.
 # pw-loopback keeps test-created objects alive until the helper exits.
 for _ in range(4):

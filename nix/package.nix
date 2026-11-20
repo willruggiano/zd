@@ -72,8 +72,8 @@ stdenv.mkDerivation (finalAttrs: {
     # Zig 0.17 uses cached archives; --system instead requires unpacked trees.
     mkdir -p "$ZIG_GLOBAL_CACHE_DIR/p"
     cp -r --no-preserve=mode ${finalAttrs.zigDeps}/. "$ZIG_GLOBAL_CACHE_DIR/p/"
-    if [ ! -s generated/c.zig ] || [ src/interop.h -nt generated/c.zig ] || [ src/native.h -nt generated/c.zig ]; then
-      zig translate-c -lc $(pkg-config --cflags-only-I wayland-client libpipewire-0.3 whisper llama) -I generated src/interop.h > generated/c.zig.tmp &&
+    if [ ! -s generated/c.zig ] || [ src/interop.h -nt generated/c.zig ]; then
+      zig translate-c -lc $(pkg-config --cflags-only-I wayland-client libpipewire-0.3 whisper llama) src/interop.h > generated/c.zig.tmp &&
       mv generated/c.zig.tmp generated/c.zig
     fi
     cat > src/options.zig <<'EOF'

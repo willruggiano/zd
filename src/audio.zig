@@ -5,6 +5,12 @@ const platform = @import("platform.zig");
 const Identity = @import("dictation.zig").Capture;
 const Node = struct { id: u32 = 0, serial: u64 = 0, present: bool = false, name: [256:0]u8 = @splat(0) };
 
+// These inline bodies contain variable-length arrays and variadic calls that translate-c cannot translate correctly.
+// libspa exports the same functions. Derive their ABI types without taking the inline functions' addresses.
+const spa_json_str_object_find = @extern(*const @TypeOf(c.spa_json_str_object_find), .{ .name = "spa_json_str_object_find" });
+const spa_format_audio_raw_build = @extern(*const @TypeOf(c.spa_format_audio_raw_build), .{ .name = "spa_format_audio_raw_build" });
+const spa_format_audio_raw_parse = @extern(*const @TypeOf(c.spa_format_audio_raw_parse), .{ .name = "spa_format_audio_raw_parse" });
+
 /// All callbacks execute on the daemon thread, never PipeWire's RT thread.
 /// Native conversion delivers mono 16 kHz float PCM directly to the session.
 pub const Capture = struct {
@@ -38,12 +44,12 @@ pub const Capture = struct {
         self.initialized = true;
         _ = c.pw_log_set_level_string("0");
         self.loop = c.pw_loop_new(null) orelse return error.PipeWireLoop;
-        c.zd_enter(self.loop);
+        c.pw_loop_enter(self.loop);
         self.context = c.pw_context_new(self.loop, null, 0) orelse return error.PipeWireContext;
         self.core = c.pw_context_connect(self.context, null, 0) orelse return error.PipeWireConnection;
-        if (c.zd_core_listen(self.core, &self.core_hook, &core_events, self) < 0) return error.PipeWireListener;
-        self.registry = c.zd_registry(self.core) orelse return error.PipeWireRegistry;
-        if (c.zd_registry_listen(self.registry, &self.registry_hook, &registry_events, self) < 0) return error.PipeWireListener;
+        if (c.pw_core_add_listener(self.core, &self.core_hook, &core_events, self) < 0) return error.PipeWireListener;
+        self.registry = c.pw_core_get_registry(self.core, c.PW_VERSION_REGISTRY, 0) orelse return error.PipeWireRegistry;
+        if (c.pw_registry_add_listener(self.registry, &self.registry_hook, &registry_events, self) < 0) return error.PipeWireListener;
     }
     pub fn defaultSource(self: *Capture) ?u64 {
         if (self.failed != null or self.metadata == null) return null;
@@ -69,7 +75,13 @@ pub const Capture = struct {
         self.started = false;
         self.start_deadline = platform.now() + 3000;
         c.pw_stream_add_listener(self.stream, &self.stream_hook, &stream_events, self);
-        if (c.zd_connect(self.stream, &self.pod, self.pod.len) < 0) {
+        var builder: c.spa_pod_builder = undefined;
+        c.spa_pod_builder_init(&builder, &self.pod, self.pod.len);
+        var info: c.spa_audio_info_raw = .{ .format = c.SPA_AUDIO_FORMAT_F32, .rate = 16000, .channels = 1 };
+        info.position[0] = c.SPA_AUDIO_CHANNEL_MONO;
+        var param: [*c]const c.spa_pod = spa_format_audio_raw_build(&builder, c.SPA_PARAM_EnumFormat, &info);
+        // Do not set RT_PROCESS. The daemon thread owns capture callbacks.
+        if (param == null or c.pw_stream_connect(self.stream, c.PW_DIRECTION_INPUT, c.PW_ID_ANY, c.PW_STREAM_FLAG_AUTOCONNECT | c.PW_STREAM_FLAG_MAP_BUFFERS, &param, 1) < 0) {
             self.stop();
             return false;
         }
@@ -88,7 +100,7 @@ pub const Capture = struct {
         self.start_deadline = 0;
     }
     pub fn tick(self: *Capture) void {
-        if (c.zd_iterate(self.loop) < 0) self.failed = error.PipeWireDisconnected;
+        if (c.pw_loop_iterate(self.loop, 0) < 0) self.failed = error.PipeWireDisconnected;
         // A connection/negotiation timeout, never a recording-duration timer.
         if (self.start_deadline != 0 and platform.now() >= self.start_deadline and !self.started) self.stream_failed = error.CaptureTimeout;
     }
@@ -100,7 +112,7 @@ pub const Capture = struct {
         if (self.core) |v| _ = c.pw_core_disconnect(v);
         if (self.context) |v| c.pw_context_destroy(v);
         if (self.loop) |v| {
-            c.zd_leave(v);
+            c.pw_loop_leave(v);
             c.pw_loop_destroy(v);
         }
         c.pw_deinit();
@@ -114,17 +126,20 @@ fn is(value: [*c]const u8, expected: []const u8) bool {
     return value != null and std.mem.eql(u8, std.mem.span(value), expected);
 }
 fn global(data: ?*anyopaque, id: u32, _: u32, kind: [*c]const u8, _: u32, props: [*c]const c.spa_dict) callconv(.c) void {
+    // spa_dict_lookup requires a dictionary; registry properties can be absent.
+    if (props == null) return;
     const self = owner(data);
-    if (is(kind, "PipeWire:Interface:Metadata") and is(c.zd_property(props, "metadata.name"), "default") and self.metadata == null) {
-        self.metadata = c.zd_metadata(self.registry, id) orelse {
+    if (is(kind, "PipeWire:Interface:Metadata") and is(c.spa_dict_lookup(props, "metadata.name"), "default") and self.metadata == null) {
+        const metadata = c.pw_registry_bind(self.registry, id, c.PW_TYPE_INTERFACE_Metadata, c.PW_VERSION_METADATA, 0) orelse {
             self.failed = error.PipeWireRegistry;
             return;
         };
+        self.metadata = @ptrCast(metadata);
         self.metadata_id = id;
-        if (c.zd_metadata_listen(self.metadata, &self.metadata_hook, &metadata_events, self) < 0) self.failed = error.PipeWireRegistry;
-    } else if (is(kind, "PipeWire:Interface:Node") and (is(c.zd_property(props, "media.class"), "Audio/Source") or is(c.zd_property(props, "media.class"), "Audio/Source/Virtual"))) {
-        const name = c.zd_property(props, "node.name");
-        const serial = c.zd_property(props, "object.serial");
+        if (c.pw_metadata_add_listener(self.metadata, &self.metadata_hook, &metadata_events, self) < 0) self.failed = error.PipeWireRegistry;
+    } else if (is(kind, "PipeWire:Interface:Node") and (is(c.spa_dict_lookup(props, "media.class"), "Audio/Source") or is(c.spa_dict_lookup(props, "media.class"), "Audio/Source/Virtual"))) {
+        const name = c.spa_dict_lookup(props, "node.name");
+        const serial = c.spa_dict_lookup(props, "object.serial");
         if (name == null or serial == null) return;
         const value = std.mem.span(name);
         if (value.len >= self.default_name.len) {
@@ -163,7 +178,7 @@ fn property(data: ?*anyopaque, subject: u32, key: [*c]const u8, _: [*c]const u8,
     const self = owner(data);
     if (subject != 0 or (key != null and !is(key, "default.audio.source"))) return 0;
     self.default_name[0] = 0;
-    if (value != null and c.zd_default_name(value, &self.default_name, self.default_name.len) < 0) self.default_name[0] = 0;
+    if (value != null and spa_json_str_object_find(value, std.mem.len(value), "name", &self.default_name, self.default_name.len) < 0) self.default_name[0] = 0;
     return 0;
 }
 fn coreError(data: ?*anyopaque, id: u32, _: c_int, result: c_int, _: [*c]const u8) callconv(.c) void {
@@ -176,7 +191,8 @@ fn state(data: ?*anyopaque, _: c.pw_stream_state, next: c.pw_stream_state, _: [*
 fn format(data: ?*anyopaque, id: u32, param: [*c]const c.spa_pod) callconv(.c) void {
     if (id != c.SPA_PARAM_Format or param == null) return;
     const self = owner(data);
-    self.formatted = c.zd_format(param);
+    var info: c.spa_audio_info_raw = .{};
+    self.formatted = spa_format_audio_raw_parse(param, &info) >= 0 and info.format == c.SPA_AUDIO_FORMAT_F32 and info.rate == 16000 and info.channels == 1;
     if (!self.formatted) self.stream_failed = error.CaptureFormat;
 }
 fn process(data: ?*anyopaque) callconv(.c) void {

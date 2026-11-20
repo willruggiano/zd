@@ -14,4 +14,9 @@
 #include <time.h>
 #include <stdlib.h>
 
-#include "native.h"
+#include <pipewire/pipewire.h>
+#include <pipewire/extensions/metadata.h>
+#include <spa/param/audio/format-utils.h>
+#include <spa/utils/json.h>
+#include <whisper.h>
+#include <pthread.h>
