@@ -15,10 +15,8 @@ modules = [
 
 Rebuild/switch the system normally. The module installs `dictation` in the system
 profile and a **systemd user service**, not a root microphone daemon. Bind
-`dictation toggle` in your existing shortcut launcher. One press records; the
-next closes capture, finalizes and copies. Another press during finalization
-discards that session and starts a fresh recording without waiting for old inference.
-Paste manually. The current streaming limitations still apply; see [runtime behavior](runtime.md).
+`dictation toggle` in your existing shortcut launcher; see
+[runtime behavior](runtime.md#run) for the recording workflow and limitations.
 
 ## Desktop and driver prerequisites
 
@@ -36,16 +34,19 @@ Paste manually. The current streaming limitations still apply; see [runtime beha
   session-manager launcher is installed. Do not configure system-wide PipeWire
   for this user-service integration.
 
-The service has `WantedBy` and `PartOf` on `graphical-session.target`, `Wants` and
-`After` on `pipewire.service`, and `ConditionEnvironment=WAYLAND_DISPLAY`.
-**Ordering after PipeWire is not microphone readiness.** The application still
-resolves the current default source when recording begins and refuses capture
-when none is available. Model readiness is separate again: wait for
-`model ready (GPU requested; CPU fallback allowed)` (or the explicitly selected
-CPU equivalent).
-GPU initialization may fall back to CPU with a warning; readiness is not proof of
-CUDA execution. A systemd `active` state does not mean a model has loaded
-successfully.
+The session supplies lifetime and environment; PipeWire supplies audio:
+
+```text
+desktop
+  --owns--> graphical-session.target
+              --starts/stops--> dictation.service
+                                  --needs--> pipewire.service
+```
+
+See [the module](../nix/module.nix) for exact unit settings.
+**Service ordering is not microphone readiness.** Wait for the model-ready
+message before recording. GPU readiness and fallback are explained in
+[runtime operation](runtime.md#run).
 
 ## The desktop owns the session
 
@@ -110,15 +111,13 @@ fails with sanitized application diagnostics. For deliberate shutdown of only
 dictation use `systemctl --user stop dictation.service`; stopping the desktop's
 target also affects its other services.
 
-A recoverable microphone/inference/session failure permits a fresh toggle, even
-while cancelled decoding unwinds; it selects the then-current default microphone.
-PipeWire/Wayland connection loss and device-table exhaustion instead terminate the
-daemon safely. The unit's `Restart=on-failure` retries after two seconds, subject
-to systemd start limits. Restore the dependency (or rebuild with larger
-`deviceSlots`) before retrying; use `systemctl --user reset-failed dictation.service`
-if a start limit was reached, then restart it. Restart reloads the model and stays
-idle, never resumes recording. See [failure/recovery semantics](runtime.md#failure-and-recovery),
-including the clipboard-ownership boundary on daemon/compositor loss.
+For daemon-fatal failures, the unit retries under its configured restart policy
+and systemd start limits. Restore the dependency (or rebuild
+with larger capacities) before retrying. If a start limit was reached, run
+`systemctl --user reset-failed dictation.service`, then restart it.
+[Failure and recovery](runtime.md#failure-and-recovery) defines which errors
+permit a fresh toggle, which require restart, and what happens to clipboard
+ownership.
 
 ## Model and whole-program storage configuration
 
@@ -158,26 +157,16 @@ unreadable/incompatible model leaves the application failed, with no model or
 fixture substitution and no microphone activity. GPU unavailability separately
 allows upstream CPU fallback with a warning. Restart after repairing the file.
 
-All thirteen sizing options above have the same names as package arguments. Module
-sizing is authoritative over the base package's sizing overrides. Changing it or
+Sizing options use the same names as package arguments. Module sizing overrides
+the base package's sizing values. Changing sizing or
 the embedded model path rebuilds Zig; no runtime heap, arena, configuration parser
 or model-path command-line flag is introduced. The read-only
 `services.dictation.finalPackage` is the installed, configured derivation.
-`nix/storage.nix` shares package defaults and module metadata; the actual typed
-layout and arithmetic validation remain Zig's responsibility.
-
-Defaults, units, limits, multiplicities and allocation exceptions are in the
-[runtime storage ledger](runtime.md#static-storage-and-allocation-audit). In
-particular, each transcript needs session/worker/clipboard copies, while device,
-control, monitor and reader tables have their own capacities. `outputSlots`
-bounds simultaneous monitors (default 8). Exhaustion exits with `OutputCapacity`
-rather than silently omitting feedback; increase the setting and rebuild. `audioSamples` now sizes
-**each recycled window**, multiplied by `audioWindows`, not the whole session.
-At least two slots are required: one may remain borrowed by superseded inference
-while the others accept replacement capture. No second whole-session bank is used.
-`pauseSamples <= windowMinSamples <= audioSamples` must hold; invalid combinations
-fail Zig compilation before deployment. Backlog exhaustion remains an explicit
-failure, not a recording timer or a promise of unlimited transcript storage.
+[nix/storage.nix](../nix/storage.nix) defines option descriptions, defaults and
+ranges. Use [runtime storage accounting](runtime.md#static-storage-and-allocation-audit)
+for the relationships between configuration and memory use. Module types
+reject out-of-range or incompatible settings during evaluation; Zig compilation
+independently rejects invalid and overflowing layouts before deployment.
 
 Inspect the **installed executable**, not just Nix option values:
 
@@ -185,132 +174,17 @@ Inspect the **installed executable**, not just Nix option values:
 /run/current-system/sw/bin/dictation footprint
 ```
 
-For the verified aarch64 build, defaults occupy **19,529,728 bytes** and the
-configuration above **12,517,376 bytes**, aligned to 65,536. Use the current binary's
-output for other settings: streaming adds multiple audio windows, a bounded prompt
-and short-tail padding, so milestone-03 measurements no longer apply. Restart
-identities/cancellation bookkeeping are included in the typed total as well. Totals
-include alignment/padding and the worker stack. The conservative main-thread stack
-budget is separately **16 KiB**, not compiler-certified. Native library/driver allocations
-are excluded, as is Wayland pixel backing: **204,800 bytes per active output**,
-up to **1,638,400 bytes** by default or **614,400 bytes** for the three-output
-configuration above. Output/scale changes and backing lifetimes are documented in
-[reactive feedback](runtime.md#reactive-multi-monitor-feedback).
-This is not a total RSS/VRAM limit. Module types reject out-of-range or incompatible
-settings during evaluation; package compilation independently rejects invalid and
-overflowing sizes before any service can run. Future storage inputs must be added
-to the same package/module contract, typed layout and consumer checks.
+The accounting guide explains what this total includes and excludes; it is not a total
+RSS/VRAM limit. Previously measured layouts, including the example above, live
+in the [verification evidence](verification.md#recorded-milestone-08-verification).
 
-## Shutdown and privacy boundaries
+## Shutdown
 
-Stopping the session stops dictation, closes capture and releases its Wayland
-connection. SIGTERM requests orderly worker abort/join; model initialization itself
-is not cancellable. The unit permits 30 seconds for shutdown before systemd's
-normal forced termination. No recording or transcript-history files are created.
-Application diagnostics do not include dictated text.
+Stopping the desktop session stops dictation. SIGTERM requests orderly teardown.
+Systemd can force termination when the [unit's timeout](../nix/module.nix) expires. See
+[runtime privacy and shutdown](runtime.md#privacy-and-shutdown) for microphone,
+clipboard, lock/suspend and retention boundaries.
 
-An **external clipboard manager may retain copied text** independently. Conversely,
-without one, stopping the service ends its clipboard ownership and the transcript
-may no longer be pasteable. This is not a clipboard-history application or a
-forensic-erasure guarantee.
-
-**Locking alone does not cancel recording. Cancellation on suspend is not
-promised.** Stop recording before locking/suspending if that is your intent.
-There is no bespoke lock/suspend integration in v1.
-
-## Separate verification
-
-Fast checks and the native package's `checkPhase` remain **only Zig's standard
-test suite**, with `doCheck` enabled. The following are separate named consumers:
-
-```sh
-# Public module evaluation, invalid settings, and built default/non-default footprint:
-nix build .#cpu.passthru.tests.module-config --no-link -L
-
-# Boot and exercise the installed user-service workflow (KVM):
-nix build .#cpu.passthru.tests.session-vm --no-link -L
-
-# Same assertions with explicit software CPU emulation, without /dev/kvm:
-nix build .#cpu.passthru.tests.session-vm-tcg --no-link -L
-```
-
-The same names are exposed on `.#default.passthru.tests`. All explicitly select
-the real CPU package for executable checks; none runs the CUDA package without
-a GPU. They are **not** selected by a flake `checks` output or CI, and attaching
-`passthru.tests` does not execute them during normal package builds.
-
-`module-config` needs a native Linux builder for the selected supported system
-(aarch64 or x86_64), Zig/toolchain dependencies and Nix provisioning access/cache.
-It tests enabled/disabled installation, user-unit relationships, default model,
-package/local-path overrides, all sizing values in built binaries, and invalid,
-incompatible or overflowing configuration. It does not boot a service.
-
-`session-vm` needs a Linux NixOS-test builder (`nixos-test` and `kvm` system
-features), a usable `/dev/kvm`, QEMU, roughly 2 GiB guest RAM plus host/build
-headroom, and space for a NixOS closure. `session-vm-tcg` removes the KVM
-requirement and forces much slower software emulation (Cortex-A72 on aarch64).
-The driver allows a longer boot handshake. In the TCG variant only, its test
-transport waits for real console character devices rather than delayed udev
-device-unit tags; the installed dictation and PipeWire units are unchanged.
-Merely advertising a Nix system feature does not create its device. Dependencies
-and tiny.en are provisioned by Nix before execution; the guest performs no model
-download. The VM
-uses a normal user, a desktop-owned generic target, **real PipeWire/WirePlumber**,
-a virtual input fed pinned upstream JFK speech, real CPU whisper model/state
-initialization, and headless Sway with **native indicator and clipboard**.
-Both VM variants explicitly preload `nix/test-inference.c` into the test service:
-it substitutes only the three decode/result functions, requires at least one
-second of finite non-silent PCM, and returns labelled fixed text. It does not
-replace model loading, capture or Wayland. This is **not speech recognition
-verification**; the separate `capture-inference` consumer runs real CPU decoding.
-The adapter is neither installed with the package nor enabled by the exported
-module. It checks environment
-skipping/import, bad-model refusal, configured footprint, absent-default refusal,
-visible pixel changes, independent clipboard retrieval and shutdown during capture.
-It uses no Home Manager, UWSM or Hyprland integration. Screenshots and the driver
-log are test artifacts, not application recording/history features.
-
-Creating/evaluating these derivations is distinct from executing them successfully.
-Target RTX 3090 execution, physical microphone quality, recognition latency and
-real-desktop focus/click-through acceptance remain milestone 09.
-
-### Recorded milestone-03 verification
-
-Executed on an **aarch64-linux** builder with Zig **0.17.1**:
-
-- Nix/Zig formatting and both standard Zig test invocations passed: **12 tests**.
-- Default/CPU package builds, `module-config`, and the five existing native/sizing
-  consumers (`native-smoke`, `capture-inference`, `model-failure`,
-  `backend-required`, `sizing`) succeeded. Unchanged native derivations reused
-  their successful build results; their real CPU recognition evidence is recorded
-  in [runtime.md](runtime.md#recorded-milestone-02-verification).
-- **`session-vm-tcg` executed successfully**, not merely evaluated. Its test script
-  took about 640 seconds without `/dev/kvm`. It verified the installed executable
-  running as UID 1000, environment skip/import, missing model and default-source
-  refusal, all configured sizing values, real virtual-input capture, visible
-  indicator pixels, final-only native clipboard delivery of the adapter's fixed
-  text, and clean session shutdown releasing capture, clipboard and control.
-  The result includes `screenshots/recording.png`.
-- The KVM `session-vm` derivation was successfully created, but **not executed**
-  here because `/dev/kvm` is unavailable. An earlier real-decoding TCG attempt did
-  not finish within 600 seconds; it is not successful VM recognition evidence.
-  The checked-in VM explicitly uses the decoder adapter described above.
-
-Self-review against milestone 02 covered standards/allocation and ticket-03
-acceptance separately, with no remaining ticket-03 findings. No independent
-reviewer was available. Physical microphone, NVIDIA execution and target-desktop
-quality/latency/focus/click-through validation remain milestone 09.
-
-### Runtime allocation review
-
-This slice changes no production Zig or C runtime code. The test-only decoder
-interposer is outside the package fileset and has no production linkage. The unit
-executes the existing
-`dictation daemon` entry point directly, without a shell wrapper, new runtime
-arguments, a configuration-file parser or an environment-based sizing path.
-Model paths and capacities still become build-time `src/options.zig` constants;
-the built program computes and reports its actual `Storage` layout. The existing
-startup, toggle, signal/shutdown, native ownership and allocation findings in
-[runtime.md](runtime.md#static-storage-and-allocation-audit) still apply. Nix,
-systemd and test-driver allocations are not application storage hidden behind a
-runtime shim. This review is separate from the standard Zig test suite.
+For module and installed-session checks, use the
+[test catalog](testing.md#module-configuration); past installation results are in
+[local evidence](verification.md#recorded-milestone-03-verification).
