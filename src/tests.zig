@@ -12,6 +12,7 @@ fn TestDesktop(comptime Serving: type) type {
         clipboard: Serving = if (Serving == void) {} else .{},
         io: ClipboardIO = .{},
         capture: bool = false,
+        capture_id: dictation.Capture = .{ .session = 0, .source = 0 },
         indicator: dictation.Indicator = .idle,
         copied: [4096]u8 = undefined,
         len: usize = 0,
@@ -33,8 +34,9 @@ fn TestDesktop(comptime Serving: type) type {
         pub fn defaultSource(self: *@This()) ?u64 {
             return self.default_source;
         }
-        pub fn recording(self: *@This(), source: ?u64) bool {
-            self.selected_source = source;
+        pub fn recording(self: *@This(), source: ?dictation.Capture) bool {
+            if (source) |id| self.capture_id = id;
+            self.selected_source = if (source) |id| id.source else null;
             self.capture = source != null and self.capture_available;
             return source == null or self.capture;
         }
@@ -77,7 +79,7 @@ test "toggles capture then finalizes and copies once without intermediate public
     try expect(desktop.capture);
     try equal(.recording, desktop.indicator);
     try equal(0, desktop.copies);
-    app.audio(&.{0.1}, &desktop);
+    app.audio(desktop.capture_id, &.{0.1}, &desktop);
     app.toggle(&desktop);
     try expect(!desktop.capture);
     try equal(.finalizing, desktop.indicator);
@@ -97,7 +99,7 @@ test "empty, failed and over-capacity finalization preserve the clipboard" {
     app.modelLoaded(true, &desktop);
     for ([_][]const u8{ "", "Too long!", "Fits" }) |result| {
         app.toggle(&desktop);
-        app.audio(&.{0.1}, &desktop);
+        app.audio(desktop.capture_id, &.{0.1}, &desktop);
         app.toggle(&desktop);
         desktop.fail = std.mem.eql(u8, result, "Fits");
         app.complete(desktop.operation, result, &desktop);
@@ -130,7 +132,7 @@ test "exact transcript boundary succeeds at non-default capacity" {
     try app.connect(.{ .layer_shell = true, .data_control = true });
     app.modelLoaded(true, &desktop);
     app.toggle(&desktop);
-    app.audio(&.{0.1}, &desktop);
+    app.audio(desktop.capture_id, &.{0.1}, &desktop);
     app.toggle(&desktop);
     app.complete(desktop.operation, "12345678", &desktop);
     try text("12345678", desktop.copied[0..desktop.len]);
@@ -157,13 +159,13 @@ test "previous clipboard remains readable during subsequent capture and finaliza
     app.modelLoaded(true, &desktop);
     for (0..4) |_| {
         app.toggle(&desktop);
-        app.audio(&.{0.1}, &desktop);
+        app.audio(desktop.capture_id, &.{0.1}, &desktop);
         app.toggle(&desktop);
         app.complete(desktop.operation, "X", &desktop);
         app.toggle(&desktop);
         try expect(desktop.capture);
         try text("X", desktop.copied[0..desktop.len]);
-        app.audio(&.{0.1}, &desktop);
+        app.audio(desktop.capture_id, &.{0.1}, &desktop);
         app.toggle(&desktop);
         try expect(!desktop.capture);
         try text("X", desktop.copied[0..desktop.len]);
@@ -203,15 +205,15 @@ test "a missing default microphone fails without capture and each session pins i
     try equal(41, desktop.selected_source.?);
     desktop.default_source = 92;
     try equal(41, desktop.selected_source.?);
-    app.audio(&.{0.1}, &desktop);
+    app.audio(desktop.capture_id, &.{0.1}, &desktop);
     app.toggle(&desktop);
     try expect(!desktop.capture);
     app.complete(desktop.operation, "First.", &desktop);
     app.toggle(&desktop);
     try equal(92, desktop.selected_source.?);
-    app.sourceRemoved(41, &desktop);
+    app.sourceRemoved(.{ .session = desktop.capture_id.session, .source = 41 }, &desktop);
     try expect(desktop.capture);
-    app.sourceRemoved(92, &desktop);
+    app.sourceRemoved(desktop.capture_id, &desktop);
     try expect(!desktop.capture);
     try equal(.failure, desktop.indicator);
     try text("First.", desktop.copied[0..desktop.len]);
@@ -224,7 +226,7 @@ test "full windows decode during recording and only stop publishes the assembled
     try app.connect(.{ .layer_shell = true, .data_control = true });
     app.modelLoaded(true, &desktop);
     app.toggle(&desktop);
-    app.audio(&.{ 0.1, 0.2, -0.3, 0.4 }, &desktop);
+    app.audio(desktop.capture_id, &.{ 0.1, 0.2, -0.3, 0.4 }, &desktop);
     try expect(desktop.capture);
     try equal(1, desktop.decode_count);
     try expect(desktop.decoded_while_capturing);
@@ -232,7 +234,7 @@ test "full windows decode during recording and only stop publishes the assembled
     app.complete(desktop.operation, "First.", &desktop);
     try text("Previous", desktop.copied[0..desktop.len]);
     try equal(.recording, desktop.indicator);
-    app.audio(&.{0.5}, &desktop);
+    app.audio(desktop.capture_id, &.{0.5}, &desktop);
     app.toggle(&desktop);
     try expect(!desktop.capture);
     try equal(.finalizing, desktop.indicator);
@@ -247,6 +249,8 @@ test "capture and worker sizing rejects zero, incompatible stacks and overflowin
     const Sizes = @import("config.zig").Sizes;
     try std.testing.expectError(error.InvalidAudioCapacity, (Sizes{ .audio_samples = 0 }).validate());
     try std.testing.expectError(error.InvalidDeviceCapacity, (Sizes{ .device_slots = 0 }).validate());
+    try std.testing.expectError(error.InvalidDeviceCapacity, (Sizes{ .device_slots = 257 }).validate());
+    try (Sizes{ .device_slots = 1 }).validate();
     try std.testing.expectError(error.InvalidWorkerStack, (Sizes{ .worker_stack_bytes = 1 }).validate());
     try std.testing.expectError(error.InvalidInferenceThreads, (Sizes{ .inference_threads = 0 }).validate());
     try std.testing.expectError(error.Overflow, (Sizes{ .audio_samples = std.math.maxInt(usize) }).validate());
@@ -269,13 +273,13 @@ test "initialization, capture and inference failures preserve the previous clipb
     desktop.capture_available = true;
     desktop.decode_available = false;
     app.toggle(&desktop);
-    app.audio(&.{0.2}, &desktop);
+    app.audio(desktop.capture_id, &.{0.2}, &desktop);
     app.toggle(&desktop);
     try expect(!desktop.capture);
     try equal(.failure, desktop.indicator);
     desktop.decode_available = true;
     app.toggle(&desktop);
-    app.audio(&.{0.2}, &desktop);
+    app.audio(desktop.capture_id, &.{0.2}, &desktop);
     app.toggle(&desktop);
     app.inferenceFailed(desktop.operation, error.InferenceFailure, &desktop); // controlled inference error after relinquishing audio
     app.complete(desktop.operation, "Partial old result", &desktop);
@@ -292,7 +296,7 @@ test "silence avoids inference and repeated sessions reuse readiness without con
     try app.connect(.{ .layer_shell = true, .data_control = true });
     app.modelLoaded(true, &desktop);
     app.toggle(&desktop);
-    app.audio(&.{ 0, 0, 0, 0 }, &desktop);
+    app.audio(desktop.capture_id, &.{ 0, 0, 0, 0 }, &desktop);
     app.toggle(&desktop);
     try expect(!desktop.capture);
     try equal(.no_speech, desktop.indicator);
@@ -300,7 +304,7 @@ test "silence avoids inference and repeated sessions reuse readiness without con
     try text("Previous", desktop.copied[0..desktop.len]);
     for (0..3) |_| {
         app.toggle(&desktop);
-        app.audio(&.{0.1}, &desktop);
+        app.audio(desktop.capture_id, &.{0.1}, &desktop);
         app.toggle(&desktop);
         app.complete(desktop.operation, "Reply.", &desktop);
         try text("Reply.", desktop.copied[0..desktop.len]);
@@ -315,11 +319,11 @@ test "pause-aligned windows leave recording active and retain the short tail" {
     try app.connect(.{ .layer_shell = true, .data_control = true });
     app.modelLoaded(true, &desktop);
     app.toggle(&desktop);
-    app.audio(&.{ 0.2, 0.3, 0, 0 }, &desktop);
+    app.audio(desktop.capture_id, &.{ 0.2, 0.3, 0, 0 }, &desktop);
     try equal(1, desktop.decode_count);
     try equal(4, desktop.decode_samples);
     try equal(.recording, desktop.indicator);
-    app.audio(&.{0.4}, &desktop);
+    app.audio(desktop.capture_id, &.{0.4}, &desktop);
     app.toggle(&desktop); // stop while the earlier window is still decoding
     try expect(!desktop.capture);
     app.complete(desktop.operation, "Before pause.", &desktop);
@@ -338,7 +342,7 @@ test "continuous boundaries carry bounded context without deleting repeated word
     try app.connect(.{ .layer_shell = true, .data_control = true });
     app.modelLoaded(true, &desktop);
     app.toggle(&desktop);
-    app.audio(&.{ 0.1, 0.2, 0.3, 0.4 }, &desktop);
+    app.audio(desktop.capture_id, &.{ 0.1, 0.2, 0.3, 0.4 }, &desktop);
     app.complete(desktop.operation, "  earlier words again  ", &desktop);
     app.advance(&desktop);
     try text("words again", desktop.context[0..desktop.context_len]);
@@ -347,7 +351,7 @@ test "continuous boundaries carry bounded context without deleting repeated word
     app.complete(desktop.operation, "again please", &desktop);
     try text("earlier words again again please", desktop.copied[0..desktop.len]);
     app.toggle(&desktop);
-    app.audio(&.{ 0.5, 0.6 }, &desktop);
+    app.audio(desktop.capture_id, &.{ 0.5, 0.6 }, &desktop);
     try equal(0, desktop.context_len); // never use previous-session text as a prompt
 }
 
@@ -359,7 +363,7 @@ test "130 seconds recycle audio without changing recording phase or publishing p
     app.modelLoaded(true, &desktop);
     app.toggle(&desktop);
     for (0..130) |_| {
-        app.audio(&second, &desktop);
+        app.audio(desktop.capture_id, &second, &desktop);
         app.complete(desktop.operation, "word", &desktop);
         app.advance(&desktop);
         try expect(desktop.capture);
@@ -381,23 +385,22 @@ test "full backlog fails on the next sample without modifying borrowed PCM or pu
     try app.connect(.{ .layer_shell = true, .data_control = true });
     app.modelLoaded(true, &desktop);
     app.toggle(&desktop);
-    app.audio(&.{ 0.1, 0.2, 0.3, 0.4 }, &desktop);
+    app.audio(desktop.capture_id, &.{ 0.1, 0.2, 0.3, 0.4 }, &desktop);
     try expect(desktop.capture); // exact backlog capacity fits
     try equal(1, desktop.decode_count);
-    app.audio(&.{0.5}, &desktop);
+    app.audio(desktop.capture_id, &.{0.5}, &desktop);
     try equal(.failure, desktop.indicator);
     try equal(@as(?anyerror, error.AudioCapacity), desktop.last_problem);
     try expect(!desktop.capture);
     try std.testing.expectEqualSlices(f32, &.{ 0.1, 0.2 }, desktop.borrowed);
-    app.toggle(&desktop); // no reuse before the borrow is relinquished
-    try expect(!desktop.capture);
+    app.toggle(&desktop); // retry uses free slots while the failed borrow unwinds
+    try expect(desktop.capture);
     app.complete(desktop.operation, "Late partial", &desktop);
     app.advance(&desktop);
     try equal(1, desktop.decode_count); // discarded queued audio is never decoded
     try text("Previous", desktop.copied[0..desktop.len]);
-    app.toggle(&desktop);
     try expect(desktop.capture);
-    app.audio(&.{0.6}, &desktop);
+    app.audio(desktop.capture_id, &.{0.6}, &desktop);
     app.toggle(&desktop);
     app.complete(desktop.operation, "Recovered", &desktop);
     try text("Recovered", desktop.copied[0..desktop.len]);
@@ -411,9 +414,9 @@ test "streamed transcript exactly fills capacity but one extra byte fails before
         try app.connect(.{ .layer_shell = true, .data_control = true });
         app.modelLoaded(true, &desktop);
         app.toggle(&desktop);
-        app.audio(&.{0.1}, &desktop);
+        app.audio(desktop.capture_id, &.{0.1}, &desktop);
         app.complete(desktop.operation, "abc", &desktop);
-        app.audio(&.{0.2}, &desktop);
+        app.audio(desktop.capture_id, &.{0.2}, &desktop);
         app.complete(desktop.operation, tail, &desktop);
         if (tail.len == 4) {
             try expect(desktop.capture);
@@ -439,10 +442,10 @@ test "source loss and malformed PCM during decoding retain the borrow and discar
         try app.connect(.{ .layer_shell = true, .data_control = true });
         app.modelLoaded(true, &desktop);
         app.toggle(&desktop);
-        app.audio(&.{ 0.1, 0.2 }, &desktop);
+        app.audio(desktop.capture_id, &.{ 0.1, 0.2 }, &desktop);
         app.complete(desktop.operation, "Internal only", &desktop);
-        app.audio(&.{ 0.3, 0.4, 0.5 }, &desktop);
-        if (failure == 0) app.sourceRemoved(1, &desktop) else app.audio(&.{std.math.nan(f32)}, &desktop);
+        app.audio(desktop.capture_id, &.{ 0.3, 0.4, 0.5 }, &desktop);
+        if (failure == 0) app.sourceRemoved(desktop.capture_id, &desktop) else app.audio(desktop.capture_id, &.{std.math.nan(f32)}, &desktop);
         try equal(.failure, desktop.indicator);
         try std.testing.expectEqualSlices(f32, &.{ 0.3, 0.4 }, desktop.borrowed);
         app.complete(desktop.operation, "Late", &desktop);
@@ -471,7 +474,7 @@ test "restart opens replacement capture before old inference returns" {
     try app.connect(.{ .layer_shell = true, .data_control = true });
     app.modelLoaded(true, &desktop);
     app.toggle(&desktop);
-    app.audio(&.{ 0.1, 0.2 }, &desktop);
+    app.audio(desktop.capture_id, &.{ 0.1, 0.2 }, &desktop);
     const borrowed = desktop.borrowed;
     const old = desktop.operation;
     app.toggle(&desktop);
@@ -483,7 +486,7 @@ test "restart opens replacement capture before old inference returns" {
     try equal(92, desktop.selected_source.?);
     try equal(old, desktop.cancelled.?);
     try equal(.recording, desktop.indicator);
-    app.audio(&.{ 0.3, 0.4 }, &desktop);
+    app.audio(desktop.capture_id, &.{ 0.3, 0.4 }, &desktop);
     try std.testing.expectEqualSlices(f32, &.{ 0.1, 0.2 }, borrowed);
     try equal(1, desktop.decode_count);
     try text("Previous", desktop.copied[0..desktop.len]);
@@ -508,10 +511,10 @@ test "repeated restarts discard pending chunks and obsolete events cannot retire
     try app.connect(.{ .layer_shell = true, .data_control = true });
     app.modelLoaded(true, &desktop);
     app.toggle(&desktop);
-    app.audio(&.{ 0.1, 0.2 }, &desktop);
+    app.audio(desktop.capture_id, &.{ 0.1, 0.2 }, &desktop);
     app.complete(desktop.operation, "Discard this prefix", &desktop);
     const prefix = desktop.operation;
-    app.audio(&.{ 0.3, 0.4, 0.5, 0.6, 0.7 }, &desktop);
+    app.audio(desktop.capture_id, &.{ 0.3, 0.4, 0.5, 0.6, 0.7 }, &desktop);
     const old = desktop.operation;
     const borrowed = desktop.borrowed;
     desktop.decode_available = false; // external shared context is still occupied
@@ -521,7 +524,7 @@ test "repeated restarts discard pending chunks and obsolete events cannot retire
         app.toggle(&desktop);
         try expect(desktop.capture);
         try equal(.recording, desktop.indicator);
-        app.audio(&.{ 0.8, 0.9, 1.0 }, &desktop);
+        app.audio(desktop.capture_id, &.{ 0.8, 0.9, 1.0 }, &desktop);
         app.complete(prefix, "Duplicate earlier completion", &desktop);
         app.inferenceFailed(prefix, error.ObsoleteFailure, &desktop);
         try expect(desktop.capture);
@@ -561,7 +564,7 @@ test "replacement failure preserves clipboard while cancellation is delayed" {
         try app.connect(.{ .layer_shell = true, .data_control = true });
         app.modelLoaded(true, &desktop);
         app.toggle(&desktop);
-        app.audio(&.{ 0.1, 0.2 }, &desktop);
+        app.audio(desktop.capture_id, &.{ 0.1, 0.2 }, &desktop);
         const old = desktop.operation;
         const borrowed = desktop.borrowed;
         app.toggle(&desktop);
@@ -570,9 +573,9 @@ test "replacement failure preserves clipboard while cancellation is delayed" {
         if (failure == 2) desktop.capture_available = false;
         app.toggle(&desktop);
         if (failure == 0) {
-            app.audio(&.{ 0.3, 0.4 }, &desktop);
+            app.audio(desktop.capture_id, &.{ 0.3, 0.4 }, &desktop);
             try expect(desktop.capture); // one retained + one replacement window fits
-            app.audio(&.{0.5}, &desktop);
+            app.audio(desktop.capture_id, &.{0.5}, &desktop);
         }
         try expect(!desktop.capture);
         try equal(.failure, desktop.indicator);
@@ -591,7 +594,7 @@ test "replacement failure preserves clipboard while cancellation is delayed" {
         desktop.default_source = 2;
         desktop.capture_available = true;
         app.toggle(&desktop);
-        app.audio(&.{0.6}, &desktop);
+        app.audio(desktop.capture_id, &.{0.6}, &desktop);
         app.toggle(&desktop);
         app.complete(desktop.operation, "Recovered", &desktop);
         try text("Recovered", desktop.copied[0..desktop.len]);
@@ -609,12 +612,12 @@ test "default sizing permits replacement capture while old audio remains borrowe
     try app.connect(.{ .layer_shell = true, .data_control = true });
     app.modelLoaded(true, &desktop);
     app.toggle(&desktop);
-    app.audio(&Backing.window, &desktop);
+    app.audio(desktop.capture_id, &Backing.window, &desktop);
     const old = desktop.operation;
     const borrowed = desktop.borrowed;
     app.toggle(&desktop);
     app.toggle(&desktop);
-    app.audio(&.{0.7}, &desktop);
+    app.audio(desktop.capture_id, &.{0.7}, &desktop);
     app.toggle(&desktop);
     try equal(.finalizing, desktop.indicator);
     try std.testing.expectEqualSlices(f32, &Backing.window, borrowed);
@@ -686,7 +689,7 @@ const ClipboardIO = struct {
 
 fn reply(app: anytype, desktop: anytype, value: []const u8) void {
     app.toggle(desktop);
-    app.audio(&.{0.1}, desktop);
+    app.audio(desktop.capture_id, &.{0.1}, desktop);
     app.toggle(desktop);
     app.complete(desktop.operation, value, desktop);
 }
@@ -704,7 +707,7 @@ test "slow concurrent readers keep distinct complete offers through capture, inf
     desktop.clipboard.send(old, 1, 0, &desktop.io);
     desktop.clipboard.tick(1, &desktop.io);
     app.toggle(&desktop);
-    app.audio(&.{0.2}, &desktop);
+    app.audio(desktop.capture_id, &.{0.2}, &desktop);
     try expect(desktop.capture);
     try equal(.recording, desktop.indicator);
     try expect(desktop.decoded_while_capturing);
@@ -717,7 +720,7 @@ test "slow concurrent readers keep distinct complete offers through capture, inf
     desktop.clipboard.send(old, 2, 2, &desktop.io);
     desktop.clipboard.tick(3, &desktop.io);
     try text("abcdefgh", desktop.io.received(2));
-    app.audio(&.{0.3}, &desktop);
+    app.audio(desktop.capture_id, &.{0.3}, &desktop);
     app.toggle(&desktop);
     try expect(!desktop.capture);
     try equal(.finalizing, desktop.indicator);
@@ -891,4 +894,134 @@ test "configured clipboard capacity copies independently and limits each reader 
     try equal(sizes.transcript_bytes, io.count);
     serving.cancelled(1, &io);
     serving.deinit(&io);
+}
+
+test "silent and empty windows inside speech preserve committed text without ending recording" {
+    var desktop: Desktop = .{};
+    _ = desktop.publish("Previous");
+    var app: dictation.Session(32, .{ .samples = 2, .slots = 2 }) = .{};
+    try app.connect(.{ .layer_shell = true, .data_control = true });
+    app.modelLoaded(true, &desktop);
+    app.toggle(&desktop);
+    app.audio(desktop.capture_id, &.{ 0.1, 0.2 }, &desktop);
+    app.complete(desktop.operation, "Before.", &desktop);
+    for (0..20) |_| app.audio(desktop.capture_id, &.{ 0, 0 }, &desktop);
+    try equal(1, desktop.decode_count);
+    try expect(desktop.capture);
+    try equal(.recording, desktop.indicator);
+    app.audio(desktop.capture_id, &.{ 0.3, 0.4 }, &desktop);
+    app.complete(desktop.operation, " \t\r\n", &desktop);
+    app.audio(desktop.capture_id, &.{ 0.5, 0.6 }, &desktop);
+    app.complete(desktop.operation, "After.", &desktop);
+    app.audio(desktop.capture_id, &.{ 0, 0, 0 }, &desktop);
+    try text("Previous", desktop.copied[0..desktop.len]);
+    app.toggle(&desktop);
+    try expect(!desktop.capture);
+    try equal(.success, desktop.indicator);
+    try text("Before. After.", desktop.copied[0..desktop.len]);
+    try equal(3, desktop.decode_count);
+}
+
+test "capture failures allow immediate retry and obsolete callbacks cannot touch replacement work" {
+    for ([_]anyerror{ error.MicrophoneRemoved, error.CaptureFormat, error.CaptureDisconnected }) |reason| {
+        var desktop: Desktop = .{};
+        _ = desktop.publish("Previous");
+        var app: dictation.Session(64, .{ .samples = 2, .slots = 2 }) = .{};
+        try app.connect(.{ .layer_shell = true, .data_control = true });
+        app.modelLoaded(true, &desktop);
+        for (0..20) |_| {
+            app.toggle(&desktop);
+            const old_capture = desktop.capture_id;
+            app.audio(old_capture, &.{ 0.1, 0.2 }, &desktop);
+            app.complete(desktop.operation, "Discard this prefix", &desktop);
+            app.audio(old_capture, &.{ 0.3, 0.4, 0.5 }, &desktop);
+            const old = desktop.operation;
+            const borrow = desktop.borrowed;
+            app.captureFailed(old_capture, reason, &desktop);
+            try expect(!desktop.capture);
+            try equal(.failure, desktop.indicator);
+            try equal(@as(?anyerror, reason), desktop.last_problem);
+            try equal(old, desktop.cancelled.?);
+            const copies = desktop.copies;
+            desktop.last_problem = null;
+            app.toggle(&desktop); // same device, different recording identity
+            try expect(desktop.capture);
+            app.audio(old_capture, &.{std.math.nan(f32)}, &desktop);
+            app.captureFailed(old_capture, reason, &desktop);
+            app.sourceRemoved(old_capture, &desktop);
+            try expect(desktop.capture);
+            try equal(.recording, desktop.indicator);
+            try equal(@as(?anyerror, null), desktop.last_problem);
+            app.audio(desktop.capture_id, &.{ 0.6, 0.7 }, &desktop);
+            try std.testing.expectEqualSlices(f32, &.{ 0.3, 0.4 }, borrow);
+            app.inferenceFailed(old, error.ObsoleteFailure, &desktop);
+            app.advance(&desktop);
+            try equal(0, desktop.context_len);
+            try std.testing.expectEqualSlices(f32, &.{ 0.6, 0.7 }, desktop.borrowed);
+            app.toggle(&desktop);
+            app.complete(desktop.operation, "Recovered", &desktop);
+            try equal(copies + 1, desktop.copies);
+            app.inferenceFailed(old, error.ObsoleteFailure, &desktop);
+            app.complete(old, "Old partial", &desktop);
+            app.captureFailed(old_capture, reason, &desktop);
+            app.audio(old_capture, &.{0.8}, &desktop);
+            app.advance(&desktop);
+            try equal(.success, desktop.indicator);
+            try equal(@as(?anyerror, null), desktop.last_problem);
+            try text("Recovered", desktop.copied[0..desktop.len]);
+            try equal(copies + 1, desktop.copies);
+        }
+    }
+}
+
+test "late capture errors after stop and restart cannot fail finalization or the new recording" {
+    var desktop: Desktop = .{};
+    var app: dictation.Session(32, .{ .samples = 2 }) = .{};
+    try app.connect(.{ .layer_shell = true, .data_control = true });
+    app.modelLoaded(true, &desktop);
+    app.toggle(&desktop);
+    const old_capture = desktop.capture_id;
+    app.audio(old_capture, &.{0.1}, &desktop);
+    app.toggle(&desktop);
+    const old = desktop.operation;
+    app.captureFailed(old_capture, error.LateCaptureFailure, &desktop);
+    try equal(.finalizing, desktop.indicator);
+    app.toggle(&desktop);
+    app.captureFailed(old_capture, error.LateCaptureFailure, &desktop);
+    app.audio(old_capture, &.{std.math.nan(f32)}, &desktop);
+    app.sourceRemoved(old_capture, &desktop);
+    try equal(.recording, desktop.indicator);
+    try expect(desktop.capture);
+    app.audio(desktop.capture_id, &.{0.2}, &desktop);
+    app.inferenceFailed(old, error.LateInferenceFailure, &desktop);
+    app.toggle(&desktop);
+    app.complete(desktop.operation, "Current", &desktop);
+    try text("Current", desktop.copied[0..desktop.len]);
+    try equal(@as(?anyerror, null), desktop.last_problem);
+}
+
+test "inference errors discard internal text and the next session recovers with clean context" {
+    var desktop: Desktop = .{};
+    _ = desktop.publish("Previous");
+    var app: dictation.Session(64, .{ .samples = 1, .slots = 2 }) = .{};
+    try app.connect(.{ .layer_shell = true, .data_control = true });
+    app.modelLoaded(true, &desktop);
+    for (0..10) |_| {
+        app.toggle(&desktop);
+        app.audio(desktop.capture_id, &.{0.1}, &desktop);
+        app.complete(desktop.operation, "Never copy this", &desktop);
+        app.audio(desktop.capture_id, &.{0.2}, &desktop);
+        app.inferenceFailed(desktop.operation, error.InferenceFailure, &desktop);
+        try expect(!desktop.capture);
+        try equal(.failure, desktop.indicator);
+        try equal(@as(?anyerror, error.InferenceFailure), desktop.last_problem);
+        try equal(1, desktop.copies);
+    }
+    app.toggle(&desktop);
+    app.audio(desktop.capture_id, &.{0.3}, &desktop);
+    try equal(0, desktop.context_len);
+    app.toggle(&desktop);
+    app.complete(desktop.operation, "Recovered", &desktop);
+    try text("Recovered", desktop.copied[0..desktop.len]);
+    try equal(2, desktop.copies);
 }

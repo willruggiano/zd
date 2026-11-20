@@ -64,6 +64,9 @@ int whisper_full_with_state(struct whisper_context *ctx,
 #ifdef DICTATION_TEST_RESTART
     if (++calls == 1) return wait_for_restart(&params, samples, n_samples, energy);
 #endif
+#ifdef DICTATION_TEST_RECOVERY
+    if (access("recovery-fail", F_OK) == 0) return -1;
+#endif
 #ifdef DICTATION_TEST_CLIPBOARD
     static const char held[] = "test clipboard: decode held\n";
     if (write(STDERR_FILENO, held, sizeof(held) - 1) != (ssize_t)(sizeof(held) - 1)) return -1;
@@ -88,6 +91,9 @@ int whisper_full_with_state(struct whisper_context *ctx,
 
 int whisper_full_n_segments_from_state(struct whisper_state *state) {
     (void)state;
+#ifdef DICTATION_TEST_RECOVERY
+    if (access("recovery-empty", F_OK) == 0) return 0;
+#endif
     return 1;
 }
 

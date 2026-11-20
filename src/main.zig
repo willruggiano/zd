@@ -101,16 +101,15 @@ fn daemon() !void {
         const now = platform.now();
         if (!storage.fixture) {
             storage.capture.tick();
-            if (storage.capture.removed_source) |source| {
-                storage.session.sourceRemoved(source, &effects);
-                storage.capture.removed_source = null;
-            }
+            // A lost registry/connection cannot be repaired by opening another
+            // stream. Exit through ordered teardown; the user service may restart.
+            if (storage.capture.failed) |reason| return reason;
             if (storage.stop_capture) {
                 storage.capture.stop();
                 storage.stop_capture = false;
             }
-            if (storage.capture.failed or storage.capture.stream_failed) {
-                storage.session.captureFailed(&effects);
+            if (storage.capture.stream_failed) |reason| {
+                if (storage.capture.selected) |identity| storage.session.captureFailed(identity, reason, &effects);
             }
             switch (storage.worker.status()) {
                 .loaded => {
@@ -174,7 +173,7 @@ const Effects = struct {
     pub fn defaultSource(_: *Effects) ?u64 {
         return if (storage.fixture) 1 else storage.capture.defaultSource();
     }
-    pub fn recording(_: *Effects, source: ?u64) bool {
+    pub fn recording(_: *Effects, source: ?dictation.Capture) bool {
         if (storage.fixture) return true;
         if (source) |id| return storage.capture.start(id);
         if (storage.in_audio_callback) storage.stop_capture = true else storage.capture.stop();
@@ -199,7 +198,7 @@ const Effects = struct {
     pub fn show(self: *Effects, phase: dictation.Indicator) void {
         storage.desktop.show(phase);
         // Supply explicit synthetic audio only in --fixture mode.
-        if (storage.fixture and phase == .recording) storage.session.audio(&.{0.1}, self);
+        if (storage.fixture and phase == .recording) storage.session.audio(storage.session.source.?, &.{0.1}, self);
         switch (phase) {
             .recording => platform.diagnostic("dictation: recording\n"),
             .finalizing => platform.diagnostic("dictation: finalizing; microphone closed\n"),
@@ -213,9 +212,9 @@ const Effects = struct {
         return storage.desktop.publish(text);
     }
 };
-fn samplesReceived(samples: []const f32) void {
+fn samplesReceived(identity: dictation.Capture, samples: []const f32) void {
     storage.in_audio_callback = true;
     defer storage.in_audio_callback = false;
     var effects: Effects = .{};
-    storage.session.audio(samples, &effects);
+    storage.session.audio(identity, samples, &effects);
 }

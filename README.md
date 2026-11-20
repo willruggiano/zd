@@ -7,8 +7,9 @@ Status: **bounded streaming** implements native PipeWire capture, resident
 whisper.cpp inference while recording, a Wayland indicator and final-only
 clipboard publication, including replacement capture while cancelled inference
 unwinds and bounded, nonblocking serving of previous transcripts during new work.
-A NixOS module installs the graphical-session user service. Broader recovery,
-reactive multi-monitor feedback and target-GPU/desktop validation remain pending. See
+Recoverable failures preserve the clipboard and allow a fresh toggle; connection
+loss requires daemon restart. A NixOS module installs the graphical-session user
+service. Reactive multi-monitor feedback and target-GPU/desktop validation remain pending. See
 [installation](docs/installation.md),
 [build, demo, storage and tests](docs/runtime.md), or the explicitly simulated
 [fixture mode](docs/tracer.md).

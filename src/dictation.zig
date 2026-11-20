@@ -1,6 +1,8 @@
 const std = @import("std");
 pub const Indicator = enum { loading, idle, recording, finalizing, success, no_speech, failure };
 pub const Capabilities = struct { layer_shell: bool, data_control: bool };
+/// Capture callbacks carry the recording identity, even when the same device is reused.
+pub const Capture = struct { session: u64, source: u64 };
 /// Never reused within a daemon lifetime. Both counters fail closed on exhaustion.
 pub const Operation = struct { session: u64, window: u64 };
 pub const Windows = struct {
@@ -45,7 +47,7 @@ pub fn Session(comptime capacity: usize, comptime audio_config: Windows) type {
         phase: Indicator = .idle,
         ready: bool = false,
         model: enum { loading, ready, failed } = .loading,
-        source: ?u64 = null,
+        source: ?Capture = null,
         transcript: [capacity]u8 = undefined,
         transcript_len: usize = 0,
         windows: [audio_config.slots]Window = @splat(.{}),
@@ -89,7 +91,7 @@ pub fn Session(comptime capacity: usize, comptime audio_config: Windows) type {
             } else {
                 if (self.phase == .finalizing) {
                     self.discard(effects);
-                } else if (self.in_flight != null) return;
+                }
                 self.generation = std.math.add(u64, self.generation, 1) catch {
                     effects.problem(error.SessionIdentityCapacity);
                     self.fail(effects);
@@ -101,18 +103,19 @@ pub fn Session(comptime capacity: usize, comptime audio_config: Windows) type {
                     self.fail(effects);
                     return;
                 };
-                if (!effects.recording(source)) {
+                const capture: Capture = .{ .session = self.generation, .source = source };
+                if (!effects.recording(capture)) {
                     effects.problem(error.CaptureStart);
                     self.fail(effects);
                     return;
                 }
-                self.source = source;
+                self.source = capture;
                 self.phase = .recording;
                 effects.show(.recording);
             }
         }
-        pub fn audio(self: *Self, samples: []const f32, effects: anytype) void {
-            if (self.phase != .recording) return;
+        pub fn audio(self: *Self, capture: Capture, samples: []const f32, effects: anytype) void {
+            if (!self.capturing(capture)) return;
             self.advance(effects);
             for (samples) |sample| {
                 if (self.phase != .recording) return;
@@ -162,6 +165,7 @@ pub fn Session(comptime capacity: usize, comptime audio_config: Windows) type {
                 };
                 const operation: Operation = .{ .session = self.generation, .window = self.window_number };
                 if (!effects.decode(operation, window.samples[0..window.len], self.context())) {
+                    effects.problem(error.InferenceUnavailable);
                     self.fail(effects);
                     return;
                 }
@@ -183,11 +187,17 @@ pub fn Session(comptime capacity: usize, comptime audio_config: Windows) type {
             @memset(self.transcript[0..self.transcript_len], 0);
             self.transcript_len = 0;
         }
-        pub fn sourceRemoved(self: *Self, source: u64, effects: anytype) void {
-            if (self.phase == .recording and self.source == source) self.fail(effects);
+        fn capturing(self: *Self, capture: Capture) bool {
+            const current = self.source orelse return false;
+            return self.phase == .recording and std.meta.eql(current, capture);
         }
-        pub fn captureFailed(self: *Self, effects: anytype) void {
-            if (self.phase == .recording) self.fail(effects);
+        pub fn sourceRemoved(self: *Self, capture: Capture, effects: anytype) void {
+            self.captureFailed(capture, error.MicrophoneRemoved, effects);
+        }
+        pub fn captureFailed(self: *Self, capture: Capture, reason: anyerror, effects: anytype) void {
+            if (!self.capturing(capture)) return;
+            effects.problem(reason);
+            self.fail(effects);
         }
         // Caller first closes capture and joins inference.
         pub fn shutdown(self: *Self) void {

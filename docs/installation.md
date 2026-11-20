@@ -110,6 +110,16 @@ fails with sanitized application diagnostics. For deliberate shutdown of only
 dictation use `systemctl --user stop dictation.service`; stopping the desktop's
 target also affects its other services.
 
+A recoverable microphone/inference/session failure permits a fresh toggle, even
+while cancelled decoding unwinds; it selects the then-current default microphone.
+PipeWire/Wayland connection loss and device-table exhaustion instead terminate the
+daemon safely. The unit's `Restart=on-failure` retries after two seconds, subject
+to systemd start limits. Restore the dependency (or rebuild with larger
+`deviceSlots`) before retrying; use `systemctl --user reset-failed dictation.service`
+if a start limit was reached, then restart it. Restart reloads the model and stays
+idle, never resumes recording. See [failure/recovery semantics](runtime.md#failure-and-recovery),
+including the clipboard-ownership boundary on daemon/compositor loss.
+
 ## Model and whole-program storage configuration
 
 Options live under `services.dictation`. `package` selects the base package;
