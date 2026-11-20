@@ -84,7 +84,12 @@
             pkgs.mkShell {
               inputsFrom = [ package ];
               shellHook = package.postPatch;
-              packages = [ pkgs.nixfmt ];
+              packages = [
+                pkgs.gh
+                pkgs.gh-stack
+                pkgs.gitMinimal
+                pkgs.nixfmt
+              ];
             };
         }
       );
