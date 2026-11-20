@@ -1,0 +1,17 @@
+.{
+    .name = .dictation,
+    .version = "0.1.0",
+    .fingerprint = 0x4da9c4976c2d2559, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{
+        .wayland = .{
+            .url = "https://codeberg.org/ifreund/zig-wayland/archive/fc7672f661874aa2015fc19a87ebabce787cf1c7.tar.gz",
+            .hash = "wayland-0.7.0-lQa1kuP8AQD5dW7_o-VKLVD_QbqXe7Zob78r2su7Pyex",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

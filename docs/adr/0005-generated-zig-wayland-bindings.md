@@ -2,9 +2,15 @@
 
 Use `zig-wayland` to generate typed protocol bindings from the pinned Wayland XML files.
 Keep libwayland as the native client library.
-The [binding derivation](../../nix/wayland-bindings.nix) owns the generator pin and protocol-version selection.
-Both package and development builds use its output.
-The Zig build graph downloads no dependencies.
+The [Zig manifest](../../build.zig.zon) owns the generator pin.
+The [Zig build graph](../../build.zig) owns protocol selection, generation and application compilation.
+It uses the upstream `Scanner` build API.
+Both package and development builds use that graph.
+
+Nix supplies native dependencies and prefetches manifest dependencies with `zig.fetchDeps`.
+The package setup and development shell populate Zig's dependency cache.
+This keeps dependency ownership in Zig without requiring network access during the Nix package build.
+A separate Nix generator derivation would duplicate build orchestration outside the Zig graph.
 
 Typed handles and event unions replace translated protocol functions and C listener tables.
 This removes generated protocol C from the daemon build.
@@ -21,7 +27,3 @@ Keep explicit protocol-version limits, disconnect handling and buffer-release ha
 Keep the translated C callback type for sanitized libwayland logging.
 That callback's `va_list` ABI differs between the supported architectures.
 The bindings do not change the [protocol requirements](0004-require-wayland-protocols-not-a-specific-compositor.md).
-
-The migration does not replace PipeWire, whisper.cpp or their C bindings.
-It does not establish physical-desktop or GPU acceptance.
-See the [verification record](../verification.md) for executed checks and their limits.

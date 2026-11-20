@@ -8,6 +8,9 @@ in
   zig,
   pkg-config,
   wayland,
+  wayland-scanner,
+  wayland-protocols,
+  wlr-protocols,
   pipewire,
   cudaSupport ? true,
   modelPath ? (callPackage ./models.nix { }).large-v3-turbo,
@@ -29,7 +32,6 @@ in
 let
   # Nix paths are provisioned; absolute strings deliberately remain host paths.
   modelFile = if builtins.isPath modelPath then builtins.path { path = modelPath; } else modelPath;
-  waylandBindings = callPackage ./wayland-bindings.nix { inherit zig; };
 in
 assert lib.assertMsg (
   stdenv.buildPlatform == stdenv.hostPlatform
@@ -42,11 +44,19 @@ stdenv.mkDerivation (finalAttrs: {
     fileset = lib.fileset.unions [
       ../src
       ../build.zig
+      ../build.zig.zon
     ];
+  };
+  zigDeps = zig.fetchDeps {
+    inherit (finalAttrs) src pname version;
+    hash = "sha256-OuL4uLzhNt31hDugu5YUVYaRbB3vjrkPmSXv63bRhF0=";
   };
   nativeBuildInputs = [
     zig
     pkg-config
+    wayland-scanner
+    wayland-protocols
+    wlr-protocols
   ];
   buildInputs = [
     wayland
@@ -58,8 +68,10 @@ stdenv.mkDerivation (finalAttrs: {
   # pkg-config's include-directory flags when generating bindings.
   postPatch = ''
     mkdir -p generated
-    cp ${waylandBindings}/wayland.zig generated/wayland.zig
     export ZIG_GLOBAL_CACHE_DIR=$PWD/.zig-cache/global
+    # Zig 0.17 uses cached archives; --system instead requires unpacked trees.
+    mkdir -p "$ZIG_GLOBAL_CACHE_DIR/p"
+    cp -r --no-preserve=mode ${finalAttrs.zigDeps}/. "$ZIG_GLOBAL_CACHE_DIR/p/"
     if [ ! -s generated/c.zig ] || [ src/interop.h -nt generated/c.zig ] || [ src/native.h -nt generated/c.zig ]; then
       zig translate-c -lc $(pkg-config --cflags-only-I wayland-client libpipewire-0.3 whisper llama) -I generated src/interop.h > generated/c.zig.tmp &&
       mv generated/c.zig.tmp generated/c.zig
@@ -82,28 +94,17 @@ stdenv.mkDerivation (finalAttrs: {
     pub const model_path: [:0]const u8 = ${builtins.toJSON (toString modelFile)};
     EOF
   '';
-  # Use Nix's libc configuration and GNU target/interpreter: an older libc symbol
-  # baseline from explicit-target Zig compilation can be incompatible with PipeWire.
-  # CUDA shared objects need libcuda.so.1 from the host driver, not the sandbox.
-  # Only shared-library unresolved symbols are permitted; direct application
-  # symbols must resolve. CPU builds retain strict shared-library resolution.
+  # Use Nix's libc configuration and GNU target/interpreter. Zig's default
+  # libc symbol baseline can be incompatible with the packaged PipeWire library.
   buildPhase = ''
     runHook preBuild
     export ZIG_GLOBAL_CACHE_DIR=$PWD/.zig-cache/global
     zig libc > generated/libc.conf
-    # nixpkgs supplies ggml via llama.cpp; whisper.pc omits its library path.
-    zig build-exe ${lib.optionalString cudaSupport "-fallow-shlib-undefined "}--libc generated/libc.conf -OReleaseSafe -lc $(pkg-config --cflags-only-I --libs wayland-client libpipewire-0.3 whisper llama) \
-      -rpath ${
-        lib.makeLibraryPath [
-          wayland
-          pipewire
-          whisperLibrary
-        ]
-      } -rpath $(pkg-config --variable=libdir llama) -I generated \
-        -target ${stdenv.hostPlatform.parsed.cpu.name}-linux-gnu \
-        --dynamic-linker ${stdenv.cc.bintools.dynamicLinker} \
-      src/native.c \
-      --dep c --dep wayland -Mroot=src/main.zig -Mc=generated/c.zig -Mwayland=generated/wayland.zig -femit-bin=dictation
+    zig build -j$NIX_BUILD_CORES \
+      --libc generated/libc.conf -Doptimize=ReleaseSafe \
+      -Dtarget=${stdenv.hostPlatform.parsed.cpu.name}-linux-gnu \
+      -Ddynamic-linker=${stdenv.cc.bintools.dynamicLinker} \
+      -Dallow-shlib-undefined=${lib.boolToString cudaSupport}
     runHook postBuild
   '';
   doCheck = stdenv.buildPlatform.canExecute stdenv.hostPlatform;
@@ -114,8 +115,8 @@ stdenv.mkDerivation (finalAttrs: {
   '';
   installPhase = ''
     runHook preInstall
-    install -Dm755 dictation $out/bin/dictation
-    install -Dm644 ${waylandBindings}/share/licenses/zig-wayland/LICENSE $out/share/licenses/zig-wayland/LICENSE
+    mkdir -p "$out"
+    cp -r zig-out/. "$out/"
     runHook postInstall
   '';
   passthru = {

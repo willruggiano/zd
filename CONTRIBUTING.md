@@ -21,18 +21,20 @@ and x86_64-linux builds. Use the flake's pinned toolchain.
 ```sh
 nix develop .#default             # CPU toolchain; no model download needed
 zig build -Doptimize=ReleaseSafe
-zig fmt --check build.zig src/*.zig
+zig fmt --check build.zig build.zig.zon src/*.zig
 nixfmt --check flake.nix nix/*.nix
 ```
 
-The shell hook generates protocol and C bindings. It also writes development
-defaults to `src/options.zig`: the CPU backend and `/var/lib/dictation/model.bin`.
+The shell hook prepares C bindings and populates Zig's dependency cache.
+It also writes development defaults to `src/options.zig`: the CPU backend and `/var/lib/dictation/model.bin`.
+The Zig build graph generates Wayland bindings through the upstream `Scanner` API.
 The welcome message shows the pinned Zig source and documentation paths.
 `zig env` reports the active paths. `zig std` serves local API documentation.
 
 To build a CPU package with a model, use `nix build .#cpu`.
 A successful development build does not prove that a model loaded.
-The build graph downloads no dependencies.
+The [Zig manifest](build.zig.zon) declares Zig package dependencies.
+Nix prefetches them with `zig.fetchDeps` for use from Zig's cache during the sandboxed package build.
 After native dependency changes, remove `generated/c.zig` to regenerate bindings
 against the new headers. If the `_gateway` proxy causes `InvalidHostName`, use
 `env -u https_proxy -u HTTPS_PROXY zig build` for offline build-graph commands.

@@ -12,6 +12,7 @@ physical-desktop results.
 
 ## Reports
 
+- [Zig-owned Wayland build](#zig-owned-wayland-build)
 - [Wayland binding migration](#wayland-binding-migration)
 - [Zig research and devshell](#zig-research-and-devshell-verification)
 - [08: multi-monitor feedback](#recorded-milestone-08-verification)
@@ -22,6 +23,38 @@ physical-desktop results.
 - [04: streaming](#recorded-milestone-04-verification)
 - [03: installed session](#recorded-milestone-03-verification)
 - [02: native capture/inference](#recorded-milestone-02-verification)
+
+## Zig-owned Wayland build
+
+These checks used Zig 0.17.1 on aarch64-linux after generation moved into the Zig build graph.
+PipeWire cleanup remained separate from this change.
+
+- `zig.fetchDeps` fetched the manifest dependency and produced the fixed-output cache hash.
+  An initial `--system` attempt failed because that mode requires unpacked package directories, not Zig 0.17's cached archives.
+  The corrected setup populated Zig's normal global package cache.
+- Development builds passed with the upstream `Scanner` API.
+  A separate build used empty local package and build directories with an unreachable HTTPS proxy.
+  It completed from the prefetched global cache.
+- The generated Wayland source matched the previous generator output byte-for-byte.
+  This change added no runtime allocation path or application workspace.
+- All 38 standard Zig tests passed through a direct test invocation.
+  `zig build test` also passed; later invocations reused its cached test result.
+- Separate `native-smoke`, `capture-inference`, `indicator`, `clipboard`, `recovery-wayland`, `sizing` and `module-config` consumers passed.
+  These consumers executed. Their package builds ran the standard Zig suite in `checkPhase`.
+- The CPU and default CUDA-linked packages built through `zig build` in the Nix sandbox.
+  Native libraries and models came from existing dependencies. The builds did not rebuild the CUDA toolchain.
+  ELF inspection confirmed the installed CPU package's Nix interpreter and native-library paths.
+  The package included the upstream binding license.
+- The `session-vm-tcg` consumer booted and passed its installed-session checks.
+  The test script completed in 622.17 seconds.
+- `native-smoke` used fixture audio and inference.
+  `clipboard`, `recovery-wayland` and the VM substituted decoding, while preserving real capture, model loading and Wayland.
+  `capture-inference` exercised real CPU recognition. `indicator` used synthetic PCM and headless Sway.
+- The x86_64 CPU/default package derivations and development hook evaluated successfully.
+  The hook passed `bash -n`. No x86_64 package build or execution occurred.
+- Zig/Nix formatting and separate documentation link, anchor and fence checks passed.
+
+These results do not establish CUDA operation, physical-desktop behavior or target acceptance.
 
 ## Wayland binding migration
 
