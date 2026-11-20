@@ -79,11 +79,21 @@
         {
           default =
             let
+              zig = zig-overlay.packages.${system}."0.17.1";
               package = self.packages.${system}.cpu.override { modelPath = "/var/lib/dictation/model.bin"; };
             in
             pkgs.mkShell {
               inputsFrom = [ package ];
-              shellHook = package.postPatch;
+              shellHook = package.postPatch + ''
+                cat <<'EOF'
+                Welcome to the `zd` development shell.
+
+                ${zig}
+                  lib/std/             standard-library source, doc comments and tests
+                  doc/langref.html     bundled language reference and style guide
+                  lib/compiler/std-docs.zig  implementation of zig std
+                EOF
+              '';
               packages = [
                 pkgs.gh
                 pkgs.gh-stack

@@ -1,9 +1,7 @@
-# Target desktop/GPU validation (09)
+# Target desktop/GPU validation
 
-**Pending.** Headless/native consumers do not validate the user's RTX 3090,
-physical microphones, monitor appearance or recognition quality. The development
-workspace has no connected Wayland desktop or NVIDIA device. Cleanup (10) stays
-blocked until this acceptance and any resulting fixes are complete.
+Use this procedure to test the actual desktop, microphone and GPU. Record
+acceptance only for the tested revision. See [results](#results) for status.
 
 Use the [installation guide](installation.md) to deploy `nixosModules.default`
 with the existing generic graphical-session lifecycle and imported Wayland
@@ -28,8 +26,8 @@ wpctl status
 nvidia-smi --query-gpu=name,uuid,driver_version,memory.total --format=csv
 ```
 
-The selected **build toolkit** is CUDA 12.9 (nvcc 12.9.86, architecture 86),
-separate from the driver/UMD versions. Check the deployed flake if it changes.
+Record the deployed [build toolkit](runtime.md#dependencies-and-provisioning)
+separately from the driver/UMD versions.
 Keep environment metadata local/redact device identifiers before sharing.
 
 ## Measure, do not infer
@@ -94,11 +92,13 @@ Record pass/fail, measurement/observation, configuration and any defect for each
   standard Zig test results and separately executed named consumers. Keep cached,
   evaluated, executed and target-hardware results distinct.
 
-Preserve measurements, defects/fixes and final acceptance here (or link a durable
-report) before completing 09. Rerun affected target checks after cleanup replaces
-native integrations; pre-cleanup acceptance cannot certify new bindings.
+Preserve measurements, defects, fixes and acceptance here, or link a durable
+report. After an integration change, rerun the affected checks. Acceptance of an
+old implementation does not certify its replacement.
 
 ## Results
 
-No target measurements have been obtained in this workspace. All boxes remain
-pending; see [recorded local verification](runtime.md) for what actually ran.
+**Pending.** This workspace has no connected target desktop or NVIDIA device.
+No target measurements have been obtained. All boxes remain unchecked. See
+[local verification evidence](verification.md) for checks that actually ran;
+headless/native/VM results do not establish hardware acceptance.

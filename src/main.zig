@@ -11,6 +11,12 @@ const sizes = @import("config.zig").sizes;
 
 // Every mutable long-lived application workspace, including client-only state,
 // contributes to this actual typed layout. @sizeOf includes alignment/padding.
+// Main-thread application stack is separately budgeted at 16 KiB. This is a
+// conservative source-review estimate, not a compiler-certified bound. The
+// 4,111-byte FullPanic buffer, fixed formatting, SPA parser/builder values and
+// syscall scratch dominate it. The worker's supplied stack is already in Storage;
+// it covers bounded application frames plus native inference call frames. Other
+// native-library threads/stacks are outside the application-storage guarantee.
 const Storage = struct {
     session: dictation.Session(sizes.transcript_bytes, sizes.windows()) = .{},
     desktop: wayland.Desktop = .{},

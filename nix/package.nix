@@ -57,6 +57,8 @@ stdenv.mkDerivation (finalAttrs: {
     whisperLibrary
   ];
   dontConfigure = true;
+  # PipeWire also advertises flags that zig translate-c cannot accept. Pass only
+  # pkg-config's include-directory flags when generating bindings.
   postPatch = ''
     mkdir -p generated
     wayland-scanner client-header ${wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml generated/layer.h
@@ -87,6 +89,11 @@ stdenv.mkDerivation (finalAttrs: {
     pub const model_path: [:0]const u8 = ${builtins.toJSON (toString modelFile)};
     EOF
   '';
+  # Use Nix's libc configuration and GNU target/interpreter: an older libc symbol
+  # baseline from explicit-target Zig compilation can be incompatible with PipeWire.
+  # CUDA shared objects need libcuda.so.1 from the host driver, not the sandbox.
+  # Only shared-library unresolved symbols are permitted; direct application
+  # symbols must resolve. CPU builds retain strict shared-library resolution.
   buildPhase = ''
     runHook preBuild
     export ZIG_GLOBAL_CACHE_DIR=$PWD/.zig-cache/global

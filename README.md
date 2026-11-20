@@ -1,20 +1,17 @@
 # Dictation
 
-Local voice dictation for Wayland, using Zig and whisper.cpp:
-toggle recording, speak, then toggle again to copy the transcript.
+Local voice dictation for Wayland, built with Zig and whisper.cpp.
+Toggle recording, speak, then toggle again to copy the transcript for manual pasting.
 
-Status: **bounded streaming** implements native PipeWire capture, resident
-whisper.cpp inference while recording, reactive multi-monitor Wayland feedback
-and final-only clipboard publication, including replacement capture while cancelled inference
-unwinds and bounded, nonblocking serving of previous transcripts during new work.
-Recoverable failures preserve the clipboard and allow a fresh toggle; connection
-loss requires daemon restart. A NixOS module installs the graphical-session user
-service. [Target-GPU/desktop validation](docs/validation.md) remains pending;
-cleanup follows that gate. See
-[installation](docs/installation.md),
-[build, demo, storage and tests](docs/runtime.md), or the explicitly simulated
-[fixture mode](docs/tracer.md).
+## Documentation
 
-- To understand the planned behavior, read [the design](docs/design.md).
-- Before contributing, whether human or coding agent, read
-  [CONTRIBUTING.md](CONTRIBUTING.md).
+| Start here | Role |
+| --- | --- |
+| [Installation](docs/installation.md) | NixOS module, desktop prerequisites, graphical-session lifecycle and configuration. |
+| [Runtime](docs/runtime.md) | Run the daemon; understand behavior, limitations, native ownership and storage sizing. |
+| [Fixture mode](docs/tracer.md) | Try the workflow with explicitly simulated audio and inference. |
+| [Target validation](docs/validation.md) | Physical-desktop/GPU acceptance procedure and results. |
+| [Design](docs/design.md) | Product requirements, scope and integration constraints. |
+| [Glossary](GLOSSARY.md) | Domain vocabulary shared by code, tests and discussion. |
+| [Architecture decisions](docs/adr/) | Accepted technical decisions and their rationale. |
+| [Contributing](CONTRIBUTING.md) | Development setup, verification policy, workflow and deeper contributor references; applies to humans and coding agents. |
