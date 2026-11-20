@@ -1,1 +1,6 @@
 /.scratch/
+
+/.zig-cache/
+/zig-out/
+/generated/
+/result*
