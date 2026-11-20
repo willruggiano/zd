@@ -16,6 +16,13 @@
       each = nixpkgs.lib.genAttrs systems;
     in
     {
+      nixosModules.default = { pkgs, ... }: {
+        imports = [
+          (import ./nix/module.nix {
+            defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          })
+        ];
+      };
       formatter = each (system: (import nixpkgs { inherit system; }).nixfmt);
       packages = each (
         system:
@@ -24,14 +31,35 @@
             inherit system;
             config.allowUnfree = true;
           };
+          package =
+            args:
+            (pkgs.callPackage ./nix/package.nix args).overrideAttrs (old: {
+              passthru = old.passthru // {
+                tests = old.passthru.tests // {
+                  module-config = import ./nix/module-check.nix {
+                    inherit pkgs;
+                    flake = self;
+                  };
+                  session-vm = import ./nix/session-vm.nix {
+                    inherit pkgs;
+                    flake = self;
+                  };
+                  session-vm-tcg = import ./nix/session-vm.nix {
+                    inherit pkgs;
+                    flake = self;
+                    softwareEmulation = true;
+                  };
+                };
+              };
+            });
         in
         {
-          cpu = pkgs.callPackage ./nix/package.nix {
+          cpu = package {
             zig = zig-overlay.packages.${system}."0.17.1";
             cudaSupport = false;
             modelPath = (pkgs.callPackage ./nix/models.nix { }).tiny-en;
           };
-          default = pkgs.callPackage ./nix/package.nix { zig = zig-overlay.packages.${system}."0.17.1"; };
+          default = package { zig = zig-overlay.packages.${system}."0.17.1"; };
         }
       );
       devShells = each (

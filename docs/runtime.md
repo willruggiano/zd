@@ -2,8 +2,9 @@
 
 The second milestone adds **real native PipeWire capture and resident whisper.cpp
 inference** to the Wayland tracer. This is still an incremental implementation:
-streaming, restart while inference unwinds, graphical-session installation and
-reactive multi-monitor feedback remain later milestones. Hardware validation is
+streaming, restart while inference unwinds and reactive multi-monitor feedback
+remain later milestones. [NixOS graphical-session installation](installation.md)
+is provided by milestone 03. Hardware validation is
 not implied by the CPU integration tests.
 
 ## Run
@@ -58,7 +59,7 @@ thread, so clipboard serving and toggles remain responsive.
 - A toggle during finalization currently refuses replacement recording. It does
   not queue another session or reuse borrowed samples. Safe asynchronous restart
   belongs to milestone 05. This applies to fixture mode too.
-- No NixOS user-service module yet (03); no multi-monitor/reactive bars (08).
+- No multi-monitor/reactive bars yet (08).
   No lock/suspend integration: locking does not cancel recording. Shutdown closes
   capture first and requests decoder abort, but waits for outstanding native work
   before releasing buffers; model initialization itself is not cancellable.
@@ -197,9 +198,9 @@ native inference call frames. Native libraries' own threads/stacks remain extern
 | `transfers` | concurrent readers, 8 | 1–64 |
 
 `config.zig` rejects invalid and overflowing configurations at comptime. Changes
-rebuild the executable; no runtime allocator or fixed arena is involved. The future
-NixOS module must route these same package arguments rather than create another
-capacity scheme.
+rebuild the executable; no runtime allocator or fixed arena is involved. The
+[NixOS module](installation.md) routes these same package arguments; future
+storage additions must retain this shared contract.
 
 Audit scope includes startup, errors, capture teardown, worker setup, completion,
 shutdown, formatting and forwarded logging:
@@ -330,5 +331,6 @@ sub-agent review was available. Review fixes included native decoder-state
 retention, fail-closed GPU initialization, driver-aware linking and preserving
 Nix-path provisioning. **NVIDIA execution, a physical microphone, target-desktop
 focus/click-through and recognition quality/latency remain pending milestone 09.**
-Streaming (04), asynchronous restart (05), broader recovery (07), reactive UI
-(08), and graphical-session installation (03) are not claimed here.
+Streaming (04), asynchronous restart (05), broader recovery (07) and reactive UI
+(08) are not claimed here. Milestone 03 installation evidence is recorded in the
+[installation guide](installation.md).
