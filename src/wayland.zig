@@ -3,6 +3,8 @@ const c = @import("c");
 const sizes = @import("config.zig").sizes;
 const Indicator = @import("dictation.zig").Indicator;
 const platform = @import("platform.zig");
+const clipboard = @import("clipboard.zig");
+pub const Clipboard = clipboard.Clipboard(sizes.transcript_bytes, sizes.clipboard_slots, sizes.transfers, *c.ext_data_control_source_v1);
 
 const width = 160;
 const height = 40;
@@ -25,8 +27,7 @@ pub const Desktop = struct {
     pixels: ?[*]u32 = null,
     globals: [5]u32 = @splat(0),
     frames: [2]Frame = @splat(.{}),
-    offers: [sizes.clipboard_slots]Offer = @splat(.{}),
-    transfers: [sizes.transfers]Transfer = @splat(.{}),
+    clipboard: Clipboard = .{},
     configured: bool = false,
     dirty: bool = true,
     failed: bool = false,
@@ -34,33 +35,6 @@ pub const Desktop = struct {
     feedback_until: i64 = 0,
 
     const Frame = struct { buffer: ?*c.wl_buffer = null, busy: bool = false };
-    const Offer = struct {
-        owner: ?*Desktop = null,
-        source: ?*c.ext_data_control_source_v1 = null,
-        bytes: [sizes.transcript_bytes]u8 = undefined,
-        len: usize = 0,
-        readers: usize = 0,
-        fn release(self: *Offer) void {
-            if (self.source == null and self.readers == 0) {
-                @memset(self.bytes[0..self.len], 0);
-                self.len = 0;
-            }
-        }
-    };
-    const Transfer = struct {
-        fd: c_int = -1,
-        offer: ?*Offer = null,
-        offset: usize = 0,
-        deadline: i64 = 0,
-        fn close(self: *Transfer) void {
-            _ = c.close(self.fd);
-            self.fd = -1;
-            self.offer.?.readers -= 1;
-            self.offer.?.release();
-            self.offer = null;
-        }
-    };
-
     pub fn init(self: *Desktop) !void {
         c.wl_log_set_handler_client(sanitizedLog);
         self.display = c.wl_display_connect(null) orelse return error.WaylandConnection;
@@ -104,14 +78,7 @@ pub const Desktop = struct {
     }
 
     pub fn deinit(self: *Desktop) void {
-        for (&self.transfers) |*transfer| if (transfer.fd >= 0) {
-            transfer.close();
-        };
-        for (&self.offers) |*offer| {
-            if (offer.source) |source| c.ext_data_control_source_v1_destroy(source);
-            offer.source = null;
-            offer.release();
-        }
+        self.clipboard.deinit(self);
         if (self.layer) |v| c.zwlr_layer_surface_v1_destroy(v);
         if (self.surface) |v| c.wl_surface_destroy(v);
         for (&self.frames) |*frame| if (frame.buffer) |v| {
@@ -138,45 +105,13 @@ pub const Desktop = struct {
         };
     }
     pub fn publish(self: *Desktop, value: []const u8) bool {
-        if (self.failed or value.len > sizes.transcript_bytes) return false;
-        for (&self.offers) |*offer| {
-            if (offer.source != null or offer.readers != 0) continue;
-            const source = c.ext_data_control_manager_v1_create_data_source(self.manager) orelse return false;
-            if (c.ext_data_control_source_v1_add_listener(source, &source_listener, offer) != 0) {
-                c.ext_data_control_source_v1_destroy(source);
-                return false;
-            }
-            offer.owner = self;
-            offer.source = source;
-            @memcpy(offer.bytes[0..value.len], value);
-            offer.len = value.len;
-            c.ext_data_control_source_v1_offer(source, mime);
-            c.ext_data_control_source_v1_offer(source, "text/plain");
-            c.ext_data_control_device_v1_set_selection(self.device, source);
-            // Wayland has no publication acknowledgement. Transport failure is fatal;
-            // success here means the selection request was queued, never that a paste occurred.
-            if (c.wl_display_flush(self.display) < 0 and platform.errno() != c.EAGAIN) {
-                self.failed = true;
-                return false;
-            }
-            return true;
-        }
-        return false;
+        if (self.failed) return false;
+        return self.clipboard.publish(value, self);
     }
 
     pub fn tick(self: *Desktop, now: i64) void {
         if (self.feedback_until != 0 and now >= self.feedback_until) self.show(.idle);
-        for (&self.transfers) |*transfer| {
-            if (transfer.fd < 0) continue;
-            const offer = transfer.offer.?;
-            const remaining = offer.bytes[transfer.offset..offer.len];
-            const n = c.write(transfer.fd, remaining.ptr, @min(remaining.len, 65536));
-            if (n > 0) {
-                transfer.offset += @intCast(n);
-                transfer.deadline = now + 5000;
-            }
-            if (transfer.offset == offer.len or now >= transfer.deadline or (n < 0 and platform.errno() != c.EAGAIN and platform.errno() != c.EINTR)) transfer.close();
-        }
+        self.clipboard.tick(now, self);
         if (!self.configured or !self.dirty) return;
         for (&self.frames, 0..) |*frame, i| {
             if (frame.busy) continue;
@@ -188,6 +123,50 @@ pub const Desktop = struct {
             self.dirty = false;
             break;
         }
+    }
+
+    // Native clipboard I/O boundary. All application ownership/transfer state is
+    // in Clipboard, within the typed whole-program Storage aggregate.
+    pub fn create(self: *Desktop) ?*c.ext_data_control_source_v1 {
+        const source = c.ext_data_control_manager_v1_create_data_source(self.manager) orelse return null;
+        if (c.ext_data_control_source_v1_add_listener(source, &source_listener, self) != 0) {
+            c.ext_data_control_source_v1_destroy(source);
+            return null;
+        }
+        c.ext_data_control_source_v1_offer(source, mime);
+        c.ext_data_control_source_v1_offer(source, "text/plain");
+        return source;
+    }
+    pub fn select(self: *Desktop, source: *c.ext_data_control_source_v1) bool {
+        c.ext_data_control_device_v1_set_selection(self.device, source);
+        // No publication acknowledgement. Success means queued, not pasted.
+        if (c.wl_display_flush(self.display) < 0 and platform.errno() != c.EAGAIN) {
+            self.failed = true;
+            return false;
+        }
+        return true;
+    }
+    pub fn destroy(_: *Desktop, source: *c.ext_data_control_source_v1) void {
+        c.ext_data_control_source_v1_destroy(source);
+    }
+    pub fn prepare(_: *Desktop, fd: i32) bool {
+        // O_NONBLOCK does not prevent regular-file/device writes from blocking.
+        // Readers must supply a pipe or socket; reject other sinks, never stall capture.
+        var stat: c.struct_stat = undefined;
+        if (c.fstat(fd, &stat) != 0) return false;
+        const kind = stat.st_mode & c.S_IFMT;
+        if (kind != c.S_IFIFO and kind != c.S_IFSOCK) return false;
+        const flags = c.fcntl(fd, c.F_GETFL);
+        return flags >= 0 and c.fcntl(fd, c.F_SETFL, flags | @as(c_int, c.O_NONBLOCK)) == 0;
+    }
+    pub fn write(_: *Desktop, fd: i32, bytes: []const u8) clipboard.Write {
+        const n = c.write(fd, bytes.ptr, bytes.len);
+        if (n >= 0) return .{ .progress = @intCast(n) };
+        const err = platform.errno();
+        return if (err == c.EAGAIN or err == c.EINTR) .blocked else .failed;
+    }
+    pub fn close(_: *Desktop, fd: i32) void {
+        _ = c.close(fd);
     }
 
     fn paint(self: *Desktop, pixels: []u32) void {
@@ -261,25 +240,15 @@ fn finished(data: ?*anyopaque, _: ?*c.ext_data_control_device_v1) callconv(.c) v
     cast(Desktop, data).failed = true;
 }
 fn cancelled(data: ?*anyopaque, source: ?*c.ext_data_control_source_v1) callconv(.c) void {
-    const offer = cast(Desktop.Offer, data);
-    c.ext_data_control_source_v1_destroy(source);
-    offer.source = null;
-    offer.release();
+    const self = cast(Desktop, data);
+    self.clipboard.cancelled(source.?, self);
 }
-fn send(data: ?*anyopaque, _: ?*c.ext_data_control_source_v1, requested: [*c]const u8, fd: i32) callconv(.c) void {
-    const offer = cast(Desktop.Offer, data);
+fn send(data: ?*anyopaque, source: ?*c.ext_data_control_source_v1, requested: [*c]const u8, fd: i32) callconv(.c) void {
+    const self = cast(Desktop, data);
     const requested_mime = std.mem.span(requested);
     if (std.mem.eql(u8, requested_mime, mime) or std.mem.eql(u8, requested_mime, "text/plain")) {
-        if (c.fcntl(fd, c.F_SETFL, @as(c_int, c.O_NONBLOCK)) == 0) {
-            for (&offer.owner.?.transfers) |*transfer| {
-                if (transfer.fd >= 0) continue;
-                transfer.* = .{ .fd = fd, .offer = offer, .deadline = platform.now() + 5000 };
-                offer.readers += 1;
-                return;
-            }
-        }
-    }
-    _ = c.close(fd);
+        self.clipboard.send(source.?, fd, platform.now(), self);
+    } else self.close(fd);
 }
 const registry_listener: c.wl_registry_listener = .{ .global = global, .global_remove = removed };
 const layer_listener: c.zwlr_layer_surface_v1_listener = .{ .configure = configure, .closed = closed };

@@ -147,6 +147,19 @@ stdenv.mkDerivation (finalAttrs: {
         };
       in
       {
+        clipboard = callPackage ./smoke.nix {
+          package = cpu.override {
+            audioSamples = 16000;
+            audioWindows = 8;
+            windowMinSamples = 16000;
+            pauseSamples = 8000;
+            transcriptBytes = 262145; # two 128 KiB results and their separator
+            clipboardSlots = 2;
+            transfers = 3;
+          };
+          withCaptureTest = true;
+          withClipboardTest = true;
+        };
         restart = callPackage ./smoke.nix {
           package = windowed;
           withCaptureTest = true;

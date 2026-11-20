@@ -2,6 +2,11 @@
  * Model loading/state allocation, PCM capture and Wayland remain real. */
 #define _POSIX_C_SOURCE 200809L
 #include <math.h>
+#ifdef DICTATION_TEST_CLIPBOARD
+#include <stdio.h>
+#include <string.h>
+static char clipboard_text[131073];
+#endif
 #include <time.h>
 #include <unistd.h>
 #include <whisper.h>
@@ -59,6 +64,25 @@ int whisper_full_with_state(struct whisper_context *ctx,
 #ifdef DICTATION_TEST_RESTART
     if (++calls == 1) return wait_for_restart(&params, samples, n_samples, energy);
 #endif
+#ifdef DICTATION_TEST_CLIPBOARD
+    static const char held[] = "test clipboard: decode held\n";
+    if (write(STDERR_FILENO, held, sizeof(held) - 1) != (ssize_t)(sizeof(held) - 1)) return -1;
+    const struct timespec delay = { .tv_sec = 0, .tv_nsec = 10000000 };
+    for (int i = 0; i < 6000; ++i) {
+        if (params.abort_callback && params.abort_callback(params.abort_callback_user_data)) return -1;
+        FILE *gate = fopen("clipboard-release", "r");
+        if (gate) {
+            int value = fgetc(gate);
+            fclose(gate);
+            unlink("clipboard-release");
+            if (value < 'A' || value > 'Z') return -1;
+            memset(clipboard_text, value, sizeof(clipboard_text) - 1);
+            return 0;
+        }
+        nanosleep(&delay, NULL);
+    }
+    return -1;
+#endif
     return 0;
 }
 
@@ -70,6 +94,9 @@ int whisper_full_n_segments_from_state(struct whisper_state *state) {
 const char *whisper_full_get_segment_text_from_state(struct whisper_state *state,
                                                     int segment) {
     (void)state;
+#ifdef DICTATION_TEST_CLIPBOARD
+    if (segment == 0) return clipboard_text;
+#endif
 #ifdef DICTATION_TEST_RESTART
     if (calls == 1) return "Abandoned partial from cancelled inference.";
 #endif

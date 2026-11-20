@@ -11,15 +11,19 @@
   pipewire,
   wireplumber,
   whisper-cpp,
+  wayland,
+  wayland-scanner,
+  wayland-protocols,
   withCaptureTest ? false,
   withStreamingTest ? false,
   withRestartTest ? false,
+  withClipboardTest ? false,
   expectModelFailure ? false,
   expectGpuFallback ? false,
 }:
 let
-  restartAdapter =
-    runCommand "dictation-test-restart-inference"
+  inferenceAdapter =
+    runCommand "dictation-test-inference"
       {
         nativeBuildInputs = [
           stdenv.cc
@@ -29,9 +33,29 @@ let
       }
       ''
         mkdir -p "$out/lib"
-        $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared -DDICTATION_TEST_RESTART \
+        $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared -D${
+          if withClipboardTest then "DICTATION_TEST_CLIPBOARD" else "DICTATION_TEST_RESTART"
+        } \
           $(pkg-config --cflags-only-I whisper llama) ${./test-inference.c} \
           -o "$out/lib/libtest-inference.so"
+      '';
+  clipboardReader =
+    runCommand "dictation-test-clipboard-reader"
+      {
+        nativeBuildInputs = [
+          stdenv.cc
+          pkg-config
+          wayland-scanner
+        ];
+        buildInputs = [ wayland ];
+      }
+      ''
+        mkdir -p "$out/bin"
+        protocol=${wayland-protocols}/share/wayland-protocols/staging/ext-data-control/ext-data-control-v1.xml
+        wayland-scanner client-header "$protocol" control.h
+        wayland-scanner private-code "$protocol" control.c
+        $CC -std=c11 -Wall -Wextra -Werror -I. $(pkg-config --cflags wayland-client) \
+          ${./clipboard-reader.c} control.c $(pkg-config --libs wayland-client) -o "$out/bin/clipboard-reader"
       '';
 in
 runCommand
@@ -40,6 +64,8 @@ runCommand
       "dictation-model-failure"
     else if expectGpuFallback then
       "dictation-native-backend-fallback"
+    else if withClipboardTest then
+      "dictation-native-clipboard-adapted"
     else if withRestartTest then
       "dictation-native-restart-adapted"
     else if withStreamingTest then
@@ -118,7 +144,11 @@ runCommand
     if ${package}/bin/dictation toggle 2>missing.log; then exit 1; fi
     grep -q DaemonUnavailable missing.log
     printf 'Previous clipboard' | wl-copy
-    ${lib.optionalString withRestartTest "LD_PRELOAD=${restartAdapter}/lib/libtest-inference.so"} ${package}/bin/dictation daemon ${
+    ${
+      lib.optionalString (
+        withRestartTest || withClipboardTest
+      ) "LD_PRELOAD=${inferenceAdapter}/lib/libtest-inference.so"
+    } ${package}/bin/dictation daemon ${
       lib.optionalString (!withCaptureTest) "--fixture"
     } >daemon.log 2>&1 &
     daemon=$!
@@ -132,6 +162,8 @@ runCommand
     ${
       if expectModelFailure then
         "python3 ${./model-failure.py} ${package}/bin/dictation"
+      else if withClipboardTest then
+        "python3 ${./clipboard-smoke.py} ${package}/bin/dictation ${clipboardReader}/bin/clipboard-reader"
       else if withRestartTest then
         "python3 ${./restart-smoke.py} ${package}/bin/dictation ${whisper-cpp.src}/samples/jfk.wav"
       else if withCaptureTest then
