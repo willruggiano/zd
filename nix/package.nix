@@ -123,6 +123,12 @@ stdenv.mkDerivation (finalAttrs: {
           cudaSupport = false;
           modelPath = (callPackage ./models.nix { }).tiny-en;
         };
+        windowed = cpu.override {
+          audioSamples = 160000;
+          audioWindows = 8;
+          windowMinSamples = 160000;
+          contextBytes = 128;
+        };
         small = cpu.override {
           modelPath = "/nonexistent/dictation-test-model.bin";
           transcriptBytes = 64;
@@ -140,13 +146,13 @@ stdenv.mkDerivation (finalAttrs: {
         };
       in
       {
+        restart = callPackage ./smoke.nix {
+          package = windowed;
+          withCaptureTest = true;
+          withRestartTest = true;
+        };
         streaming = callPackage ./smoke.nix {
-          package = cpu.override {
-            audioSamples = 160000;
-            audioWindows = 8;
-            windowMinSamples = 160000;
-            contextBytes = 128;
-          };
+          package = windowed;
           withCaptureTest = true;
           withStreamingTest = true;
         };

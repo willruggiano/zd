@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("c");
+const Operation = @import("dictation.zig").Operation;
 const sizes = @import("config.zig").sizes;
 
 pub const State = enum(u8) { loading, loaded, idle, decoding, complete, failed, load_failed };
@@ -12,6 +13,8 @@ pub const Worker = struct {
     started: bool = false,
     state: State = .loading,
     stopping: bool = false,
+    cancelled: bool = false,
+    operation: Operation = .{ .session = 0, .window = 0 },
     model_path: [*:0]const u8 = undefined,
     cuda: bool = true,
     samples: []const f32 = &.{},
@@ -42,15 +45,21 @@ pub const Worker = struct {
         self.clearPrompt();
         @atomicStore(State, &self.state, .idle, .release);
     }
-    pub fn decode(self: *Worker, samples: []const f32, context: []const u8) bool {
+    pub fn decode(self: *Worker, operation: Operation, samples: []const f32, context: []const u8) bool {
         if (self.status() != .idle or context.len > sizes.context_bytes) return false;
         @memcpy(self.prompt[0..context.len], context);
         self.prompt[context.len] = 0;
         self.prompt_len = context.len;
         self.params.initial_prompt = if (context.len == 0) null else &self.prompt;
         self.samples = samples;
+        self.operation = operation;
+        @atomicStore(bool, &self.cancelled, false, .release);
         @atomicStore(State, &self.state, .decoding, .release);
         return true;
+    }
+    pub fn cancel(self: *Worker, operation: Operation) void {
+        // Main-thread identity check; cancellation never releases borrowed data.
+        if (std.meta.eql(operation, self.operation)) @atomicStore(bool, &self.cancelled, true, .release);
     }
     fn clearPrompt(self: *Worker) void {
         @memset(self.prompt[0 .. self.prompt_len + 1], 0);
@@ -124,13 +133,14 @@ pub const Worker = struct {
                 @memset(self.short_audio[self.samples.len..], 0);
             }
             const pcm = if (padded) &self.short_audio else self.samples;
-            const succeeded = c.whisper_full_with_state(context, decoder, self.params, pcm.ptr, @intCast(pcm.len)) == 0;
+            const succeeded = !@atomicLoad(bool, &self.cancelled, .acquire) and c.whisper_full_with_state(context, decoder, self.params, pcm.ptr, @intCast(pcm.len)) == 0;
             if (padded) @memset(&self.short_audio, 0);
             self.samples = &.{};
-            self.problem = error.InferenceFailure;
-            var valid = succeeded;
+            const cancelled = @atomicLoad(bool, &self.cancelled, .acquire);
+            self.problem = if (cancelled) error.InferenceCancelled else error.InferenceFailure;
+            var valid = succeeded and !cancelled;
             self.result_len = 0;
-            if (succeeded) {
+            if (valid) {
                 const count = c.whisper_full_n_segments_from_state(decoder);
                 var i: c_int = 0;
                 while (i < count) : (i += 1) {
@@ -159,5 +169,5 @@ pub const Worker = struct {
 fn silentLog(_: c.ggml_log_level, _: [*c]const u8, _: ?*anyopaque) callconv(.c) void {}
 fn abort(data: ?*anyopaque) callconv(.c) bool {
     const self: *Worker = @ptrCast(@alignCast(data.?));
-    return @atomicLoad(bool, &self.stopping, .acquire);
+    return @atomicLoad(bool, &self.stopping, .acquire) or @atomicLoad(bool, &self.cancelled, .acquire);
 }

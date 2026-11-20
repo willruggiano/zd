@@ -27,9 +27,11 @@ and brief result feedback; no transcript is drawn or automatically pasted.
 
 The daemon uses the same `dictation-<uid>` control socket as normal mode, so stop
 one daemon before starting another. SIGINT/SIGTERM shuts it down. A successful
-toggle reply acknowledges the command, not successful copying. Current
-finalization refuses additional capture until completion; safe restart is a later
-milestone, not a promise made by this fixture timer.
+toggle reply acknowledges the command, not successful copying. A toggle during
+finalization starts replacement capture through the same public state machine.
+The old 350 ms completion remains pending to simulate delayed unwinding; its
+identity prevents it from publishing. The replacement decode waits for that slot
+to return, rather than creating another timer/job. This is not GPU latency evidence.
 
 Run its installed-consumer check separately:
 

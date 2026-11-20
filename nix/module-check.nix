@@ -90,5 +90,8 @@ pkgs.runCommand "dictation-module-config" { nativeBuildInputs = [ pkgs.python3 ]
   assert configured['session_bytes'] > 640000 * 4 * 4
   assert configured['worker_bytes'] > 2097152
   assert configured['wayland_backing_bytes'] == 51200
+  assert configured['replacement_audio_windows'] == 3
+  assert default['replacement_audio_windows'] == 2
+  assert configured['retained_inference_windows'] == default['retained_inference_windows'] == 1
   PYTHON
 ''
