@@ -8,11 +8,18 @@ let
   # Explicit test-only substitution of three decoder-result functions. Real
   # whisper model loading (including bad paths) and state ownership stay intact.
   inferenceAdapter =
-    pkgs.runCommand "dictation-test-inference" { nativeBuildInputs = [ pkgs.stdenv.cc ]; }
+    pkgs.runCommand "dictation-test-inference"
+      {
+        nativeBuildInputs = [
+          pkgs.stdenv.cc
+          pkgs.pkg-config
+        ];
+        buildInputs = [ cpu.whisperLibrary ];
+      }
       ''
         mkdir -p "$out/lib"
         $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
-          -I${cpu.whisperLibrary}/include ${./test-inference.c} \
+          $(pkg-config --cflags-only-I whisper llama) ${./test-inference.c} \
           -o "$out/lib/libtest-inference.so"
       '';
   swayConfig = pkgs.writeText "dictation-test-sway.conf" ''

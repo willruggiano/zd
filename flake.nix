@@ -29,7 +29,10 @@
         let
           pkgs = import nixpkgs {
             inherit system;
-            config.allowUnfree = true;
+            config = {
+              allowUnfree = true;
+              cudaCapabilities = [ "8.6" ];
+            };
           };
           package =
             args:
@@ -67,7 +70,10 @@
         let
           pkgs = import nixpkgs {
             inherit system;
-            config.allowUnfree = true;
+            config = {
+              allowUnfree = true;
+              cudaCapabilities = [ "8.6" ];
+            };
           };
         in
         {

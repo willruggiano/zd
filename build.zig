@@ -7,6 +7,8 @@ pub fn build(b: *std.Build) void {
     root.linkSystemLibrary("wayland-client", .{});
     root.linkSystemLibrary("libpipewire-0.3", .{});
     root.linkSystemLibrary("whisper", .{});
+    // nixpkgs exposes the system ggml headers/library directory via llama.pc.
+    root.linkSystemLibrary("llama", .{});
     root.addIncludePath(b.path("generated"));
     root.addCSourceFiles(.{ .files = &.{ "generated/layer.c", "generated/control.c", "generated/xdg.c", "src/native.c" }, .flags = &.{} });
     const exe = b.addExecutable(.{ .name = "dictation", .root_module = root });

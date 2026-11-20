@@ -65,7 +65,7 @@ stdenv.mkDerivation (finalAttrs: {
     wayland-scanner private-code ${wayland-protocols}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml generated/xdg.c
     export ZIG_GLOBAL_CACHE_DIR=$PWD/.zig-cache/global
     if [ ! -s generated/c.zig ] || [ src/interop.h -nt generated/c.zig ] || [ src/native.h -nt generated/c.zig ]; then
-      zig translate-c -lc $(pkg-config --cflags-only-I wayland-client libpipewire-0.3 whisper) -I generated src/interop.h > generated/c.zig.tmp &&
+      zig translate-c -lc $(pkg-config --cflags-only-I wayland-client libpipewire-0.3 whisper llama) -I generated src/interop.h > generated/c.zig.tmp &&
       mv generated/c.zig.tmp generated/c.zig
     fi
     cat > src/options.zig <<'EOF'
@@ -89,14 +89,15 @@ stdenv.mkDerivation (finalAttrs: {
     runHook preBuild
     export ZIG_GLOBAL_CACHE_DIR=$PWD/.zig-cache/global
     zig libc > generated/libc.conf
-    zig build-exe ${lib.optionalString cudaSupport "-fallow-shlib-undefined "}--libc generated/libc.conf -OReleaseSafe -lc $(pkg-config --cflags-only-I --libs wayland-client libpipewire-0.3 whisper) \
+    # nixpkgs supplies ggml via llama.cpp; whisper.pc omits its library path.
+    zig build-exe ${lib.optionalString cudaSupport "-fallow-shlib-undefined "}--libc generated/libc.conf -OReleaseSafe -lc $(pkg-config --cflags-only-I --libs wayland-client libpipewire-0.3 whisper llama) \
       -rpath ${
         lib.makeLibraryPath [
           wayland
           pipewire
           whisperLibrary
         ]
-      } -I generated \
+      } -rpath $(pkg-config --variable=libdir llama) -I generated \
         -target ${stdenv.hostPlatform.parsed.cpu.name}-linux-gnu \
         --dynamic-linker ${stdenv.cc.bintools.dynamicLinker} \
       generated/layer.c generated/control.c generated/xdg.c src/native.c \
@@ -160,16 +161,15 @@ stdenv.mkDerivation (finalAttrs: {
           package = cpu;
           withCaptureTest = true;
         };
-        backend-required = callPackage ./smoke.nix {
-          # Exercise the installed daemon's GPU requirement without GPU hardware:
-          # a real CPU-only library must not silently satisfy use_gpu=true.
-          package = small.override {
+        backend-fallback = callPackage ./smoke.nix {
+          # Request a GPU from the real CPU-only library: startup/recognition
+          # must continue with a sanitized warning, not a patched failure.
+          package = cpu.override {
             cudaSupport = true;
             whisperLibrary = cpu.whisperLibrary;
-            modelPath = cpu.modelPath;
           };
           withCaptureTest = true;
-          expectModelFailure = true;
+          expectGpuFallback = true;
         };
         model-failure = callPackage ./smoke.nix {
           package = small;

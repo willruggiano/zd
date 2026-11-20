@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("c");
+const platform = @import("platform.zig");
 const Operation = @import("dictation.zig").Operation;
 const sizes = @import("config.zig").sizes;
 
@@ -78,8 +79,9 @@ pub const Worker = struct {
     fn run(data: ?*anyopaque) callconv(.c) ?*anyopaque {
         const self: *Worker = @ptrCast(@alignCast(data.?));
         // Never forward library strings: they may contain recognized text.
-        c.whisper_log_set(silentLog, null);
-        c.ggml_log_set(silentLog, null);
+        c.whisper_log_set(libraryLog, self);
+        c.ggml_log_set(libraryLog, self);
+        c.ggml_backend_load_all();
         var context_params = c.whisper_context_default_params();
         context_params.use_gpu = self.cuda;
         context_params.gpu_device = 0;
@@ -166,7 +168,17 @@ pub const Worker = struct {
         return null;
     }
 };
-fn silentLog(_: c.ggml_log_level, _: [*c]const u8, _: ?*anyopaque) callconv(.c) void {}
+fn libraryLog(_: c.ggml_log_level, message: [*c]const u8, data: ?*anyopaque) callconv(.c) void {
+    const self: *Worker = @ptrCast(@alignCast(data.?));
+    if (!self.cuda or message == null) return;
+    const text = std.mem.span(message);
+    // Classify only pinned upstream backend diagnostics; never forward content.
+    if (std.mem.eql(u8, text, "whisper_backend_init_gpu: no GPU found\n") or
+        std.mem.startsWith(u8, text, "whisper_backend_init_gpu: failed to initialize "))
+    {
+        platform.diagnostic("dictation: GPU backend unavailable; allowing CPU fallback\n");
+    }
+}
 fn abort(data: ?*anyopaque) callconv(.c) bool {
     const self: *Worker = @ptrCast(@alignCast(data.?));
     return @atomicLoad(bool, &self.stopping, .acquire) or @atomicLoad(bool, &self.cancelled, .acquire);
