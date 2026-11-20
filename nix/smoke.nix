@@ -10,12 +10,15 @@
   wireplumber,
   whisper-cpp,
   withCaptureTest ? false,
+  withStreamingTest ? false,
   expectModelFailure ? false,
 }:
 runCommand
   (
     if expectModelFailure then
       "dictation-model-failure"
+    else if withStreamingTest then
+      "dictation-native-streaming"
     else if withCaptureTest then
       "dictation-native-capture-inference"
     else
@@ -105,7 +108,7 @@ runCommand
       if expectModelFailure then
         "python3 ${./model-failure.py} ${package}/bin/dictation"
       else if withCaptureTest then
-        "python3 ${./audio-smoke.py} ${package}/bin/dictation ${whisper-cpp.src}/samples/jfk.wav"
+        "python3 ${./audio-smoke.py} ${package}/bin/dictation ${whisper-cpp.src}/samples/jfk.wav ${lib.optionalString withStreamingTest "--streaming"}"
       else
         "python3 ${./smoke.py} ${package}/bin/dictation"
     }

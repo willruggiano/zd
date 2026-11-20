@@ -6,13 +6,21 @@ pub const Sizes = struct {
     clipboard_slots: usize = 3,
     transfers: usize = 8,
     audio_samples: usize = 480000,
+    audio_windows: usize = 3,
+    window_min_samples: usize = 48000,
+    pause_samples: usize = 8000,
+    context_bytes: usize = 256,
     device_slots: usize = 32,
     worker_stack_bytes: usize = 8388608,
     inference_threads: usize = 4,
 
+    pub fn windows(self: Sizes) @import("dictation.zig").Windows {
+        return .{ .samples = self.audio_samples, .slots = self.audio_windows, .min_samples = self.window_min_samples, .pause_samples = self.pause_samples, .context_bytes = self.context_bytes };
+    }
     pub fn validate(self: Sizes) !void {
+        try self.windows().validate();
         _ = try std.math.mul(usize, self.transcript_bytes, try std.math.add(usize, self.clipboard_slots, 1));
-        const pcm = try std.math.mul(usize, self.audio_samples, @sizeOf(f32));
+        const pcm = try std.math.mul(usize, try std.math.mul(usize, self.audio_samples, self.audio_windows), @sizeOf(f32));
         _ = try std.math.add(usize, pcm, self.worker_stack_bytes);
         if (self.audio_samples == 0 or self.audio_samples > 16000 * 600) return error.InvalidAudioCapacity;
         if (self.device_slots == 0 or self.device_slots > 256) return error.InvalidDeviceCapacity;
@@ -30,6 +38,10 @@ pub const sizes: Sizes = .{
     .clipboard_slots = options.clipboard_slots,
     .transfers = options.transfers,
     .audio_samples = options.audio_samples,
+    .audio_windows = options.audio_windows,
+    .window_min_samples = options.window_min_samples,
+    .pause_samples = options.pause_samples,
+    .context_bytes = options.context_bytes,
     .device_slots = options.device_slots,
     .worker_stack_bytes = options.worker_stack_bytes,
     .inference_threads = options.inference_threads,

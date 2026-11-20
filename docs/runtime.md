@@ -1,11 +1,11 @@
-# Short-reply dictation
+# Streaming dictation
 
-The second milestone adds **real native PipeWire capture and resident whisper.cpp
-inference** to the Wayland tracer. This is still an incremental implementation:
-streaming, restart while inference unwinds and reactive multi-monitor feedback
-remain later milestones. [NixOS graphical-session installation](installation.md)
-is provided by milestone 03. Hardware validation is
-not implied by the CPU integration tests.
+Native PipeWire capture feeds bounded windows to a resident whisper.cpp model
+while recording continues. Audio storage is recycled; the clipboard changes only
+after stop and successful finalization. [NixOS graphical-session installation](installation.md)
+is available. Asynchronous restart and reactive multi-monitor feedback remain
+later milestones. CPU integration tests do not establish target-GPU throughput
+or recognition quality.
 
 ## Run
 
@@ -16,7 +16,7 @@ nix build                         # CUDA + hash-pinned large-v3-turbo
 ./result/bin/dictation daemon     # load once, then remain resident
 # Wait for "model ready (CUDA required)". From another terminal/shortcut:
 ./result/bin/dictation toggle     # open the current default microphone
-# Speak a short English reply.
+# Speak; decoding proceeds in the background.
 ./result/bin/dictation toggle     # close microphone, finalize, copy
 # Paste manually into another application; optional independent reader:
 wl-paste --no-newline
@@ -50,12 +50,13 @@ thread, so clipboard serving and toggles remain responsive.
 
 ### Deliberate current limitations
 
-- This slice buffers a short reply until stop. It has **no recording timer**;
-  filling the configured audio storage fails explicitly with `AudioCapacity`,
-  closes capture and preserves the clipboard. With defaults this storage holds
-  480,000 mono samples (30 seconds at 16 kHz). This is not the final no-duration-
-  cutoff product: milestone 04 must recycle audio during recording instead of
-  treating a larger whole-session buffer as the streaming solution.
+- There is **no recording timer**. Decoding must keep pace with capture and the
+  accumulated transcript must fit. Backlog exhaustion (`AudioCapacity`) or text
+  exhaustion (`TranscriptCapacity`) closes capture and preserves the previous
+  clipboard; no samples or text are silently dropped to keep a session running.
+- Forced cuts in continuous speech can affect word recognition and punctuation.
+  Bounded text context helps continuity but is not a full-session decoder or a
+  guarantee of correct boundary words; see the streaming algorithm below.
 - A toggle during finalization currently refuses replacement recording. It does
   not queue another session or reuse borrowed samples. Safe asynchronous restart
   belongs to milestone 05. This applies to fixture mode too.
@@ -113,17 +114,21 @@ explicitly. No rewriting model or command grammar is added.
 
 ## Public interface and ownership
 
-`Session(transcript_capacity, audio_capacity)` in `src/dictation.zig` remains the
+`Session(transcript_capacity, Windows)` in `src/dictation.zig` remains the
 primary seam used by both the daemon and deterministic tests. It handles protocol
 readiness, `modelLoaded`, toggles, `audio`, source loss/capture failure, decoder
 completion/failure and final-only publication. Tests control external effects,
 not a duplicate state machine or private buffer layout.
 
-Effects provide `defaultSource()`, `recording(?source_id)`, `decode(samples)`,
-`show`, `problem` and `publish`. Recording with `null` closes capture. Only
-`decode` may retain a borrow: samples remain immutable until inference relinquishes
-them and the caller delivers completion/failure. Publication must copy into its
-own bounded slot before returning. `shutdown` is called only after capture is
+Effects provide `defaultSource()`, `recording(?source_id)`, `decode(samples, context)`,
+`show`, `problem` and `publish`. Recording with `null` closes capture.
+`decode(samples, context)` may retain the PCM borrow; the context is call-scoped
+and the worker copies it into fixed storage before returning. Samples remain
+immutable until inference relinquishes them and the caller delivers `complete`
+or `inferenceFailed`. The caller then releases the external result slot and calls
+`advance`, allowing the next queued window to start. This ordering avoids submitting
+to a still-busy worker or clearing its result before the session has consumed it.
+Publication must copy into its own bounded slot before returning. `shutdown` is called only after capture is
 closed and inference joined.
 
 - PipeWire registry and metadata events are serviced on the daemon loop. A bounded
@@ -139,8 +144,8 @@ closed and inference joined.
   connection/negotiation timeout is separate from recording length.
 - One pthread owns the resident whisper context. A single audio borrow and a
   single result slot pass ownership using release/acquire state transitions.
-  There is no expanding job queue or concurrent use of the context. The worker
-  concatenates recognizer segments into bounded storage; overflow rejects all
+  The session, not the worker, owns the fixed FIFO. There is no expanding job queue
+  or concurrent use of the context. The worker concatenates recognizer segments into bounded storage; overflow rejects all
   output. Audio and application result bytes are cleared after their last use.
   The model uses whisper's `no_state` API; backend initialization is verified before
   readiness. Decoder state is freed after each decode (including native
@@ -150,6 +155,46 @@ closed and inference joined.
   reduces silence hallucinations but cannot guarantee recognizer correctness.
   Empty/whitespace results, capture/inference errors and capacity/publication
   failures preserve the clipboard.
+
+### Window boundaries and transcript assembly
+
+- `audioSamples` is now the maximum **per-window** length, not a whole-session
+  bank. `audioWindows` slots cover the borrowed window, sealed FIFO backlog and
+  current capture window together. Defaults are three slots of 480,000 samples
+  each (30 seconds/window at 16 kHz). No extra hidden whole-session PCM copy exists.
+- Prefer a boundary after `windowMinSamples` (default 48,000 / three seconds)
+  when `pauseSamples` consecutive samples (8,000 / half a second) each have
+  squared amplitude below `1e-6`. Otherwise seal at the maximum window size.
+  This simple quiet detector is not a general VAD; background noise can prevent
+  a pause boundary. Stop seals even a shorter trailing window immediately.
+- Every captured sample belongs to exactly one ordered window. There is **no
+  audio overlap or text de-duplication heuristic** that might erase intentional
+  repetitions. Bounded *text* context is the selected continuity mechanism:
+  the most recent `contextBytes` of committed current-session text (default 256),
+  shortened to a whitespace boundary so no partial word/UTF-8 sequence is passed.
+  Zero disables context. The native decoder receives this as `initial_prompt`,
+  with `no_context=true` and fresh native state for each window. This behavior was
+  checked against pinned whisper.cpp 1.9.5 source, not assumed from the field name.
+- Decode results are whitespace-trimmed, then appended in order with one space
+  between nonempty results. Empty windows do not erase earlier committed text.
+  Internal results never change the indicator to finalizing while capture is
+  active, display transcript text, or replace the clipboard. Only after stop and
+  draining every queued window may the complete accumulated text be published.
+- The worker pads inputs shorter than one second with silence using one fixed
+  16,000-sample (64,000-byte) scratch buffer. In particular, whisper.cpp otherwise
+  returns success without processing inputs shorter than 100 ms. Padding avoids
+  that API shortcut, but cannot guarantee recognition of an isolated word fragment.
+  Full windows are borrowed without this extra copy; padding is cleared after use.
+- Slots are cleared/recycled only after the decoder relinquishes them. Capture
+  errors or capacity failures discard unborrowed audio and accumulated text
+  immediately, but preserve the outstanding immutable borrow until its late
+  completion/failure, which cannot publish or schedule discarded work. Until
+  milestone 05, replacement capture waits for this unwind rather than reusing PCM.
+- Text prompting is not acoustic overlap: a forced boundary may split a word,
+  the recognizer may repeat/omit speech or hallucinate, and punctuation can vary.
+  Pause-aligned and continuous joins are exercised deterministically; real
+  boundary quality and sustained throughput remain target-desktop acceptance in
+  09. There is no later whole-session second pass after old audio is recycled.
 
 The control socket is abstract Unix `SOCK_SEQPACKET`, named `dictation-<uid>`.
 One instance per UID/network namespace, same-UID peers only; multiple graphical
@@ -171,9 +216,9 @@ without a known failure, not proof that another application pasted.
 
 `Storage` in `src/main.zig` is the actual typed aggregate, not a guessed arena.
 `@sizeOf(Storage)` includes alignment/padding and every simultaneously live copy:
-session PCM and transcript, clipboard slots/readers/transfers, control client and
+session window slots/FIFO metadata and accumulated transcript, clipboard slots/readers/transfers, control client and
 server scratch, poll state, diagnostics, device records/names, metadata and SPA
-parameter scratch, inference configuration, job/result slot, pthread attributes
+parameter scratch, inference configuration, job/result slot, bounded prompt and short-tail padding, pthread attributes
 and an explicitly supplied worker stack. Read-only literals/protocol tables and
 executable code are not mutable workspaces.
 
@@ -189,7 +234,11 @@ native inference call frames. Native libraries' own threads/stacks remain extern
 | Package argument | Unit/default | Constraints |
 | --- | --- | --- |
 | `transcriptBytes` | bytes, 1,048,576 | 1–67,108,864; session + worker + each clipboard slot |
-| `audioSamples` | mono F32 samples, 480,000 | 1–9,600,000; four bytes each; explicit exhaustion |
+| `audioSamples` | mono F32 samples/window, 480,000 | 1–9,600,000; four bytes each, multiplied by `audioWindows` |
+| `audioWindows` | slots, 3 | 2–16; includes borrowed, queued and filling windows |
+| `windowMinSamples` | samples, 48,000 | 1–`audioSamples`; stop may seal a shorter tail |
+| `pauseSamples` | quiet samples, 8,000 | 1–`windowMinSamples` |
+| `contextBytes` | prompt bytes, 256 | 0–4096; worker also owns one NUL byte |
 | `deviceSlots` | source records, 32 | 1–256; 256-byte name slots |
 | `workerStackBytes` | bytes, 8,388,608 | 1–64 MiB, multiple of 65,536 |
 | `inferenceThreads` | external decoder threads, 4 | 1–64; does not multiply application job slots |
@@ -205,6 +254,10 @@ storage additions must retain this shared contract.
 Audit scope includes startup, errors, capture teardown, worker setup, completion,
 shutdown, formatting and forwarded logging:
 
+- Streaming uses array slots, bounded index/length arithmetic, scalar energy and
+  quiet counters, slices and fixed copies. No new application allocator or
+  unbounded stack scratch is used. Prompt tokenization allocates inside the genuine
+  whisper library; our prompt and short-tail buffers remain in `Storage`.
 - libc `main` borrows argv. `std.mem` slices/copies/trim/print, integer `parseInt`,
   math and atomics do not allocate on the used paths. `std.mem.print` uses the
   fixed writer, not an allocating writer. No `std.Thread.spawn` is used.
@@ -246,6 +299,7 @@ nixfmt --check flake.nix nix/*.nix
 # Separate installed-consumer checks, never part of checkPhase:
 nix build .#cpu.passthru.tests.native-smoke --no-link -L
 nix build .#cpu.passthru.tests.capture-inference --no-link -L
+nix build .#cpu.passthru.tests.streaming --no-link -L
 nix build .#cpu.passthru.tests.sizing --no-link -L
 nix build .#cpu.passthru.tests.model-failure --no-link -L
 nix build .#cpu.passthru.tests.backend-required --no-link -L
@@ -282,7 +336,12 @@ WirePlumber, two virtual microphones, upstream's pinned JFK sample, and actual
 CPU tiny.en recognition. It checks source pinning across default changes,
 microphone teardown, resident readiness across sessions, final-only clipboard
 retrieval, silence and missing-default failure. This is not a physical microphone,
-GPU, NixOS VM, or target-desktop quality test. `sizing` compares actual default and
+GPU, NixOS VM, or target-desktop quality test. `streaming` uses the same real
+native consumer with ten-second windows, eight audio slots and bounded prompt
+context. It waits for actual CPU completion while capture remains open, verifies
+that the clipboard is unchanged, then drains multiple windows after stop. Its
+recognition assertions are regression checks, not a comprehensive boundary-quality
+assessment. `sizing` compares actual default and
 small installed binaries. `model-failure` verifies an intentionally missing model
 with real native startup: no capture, no fixture fallback, no clipboard replacement.
 `backend-required` deliberately pairs the real CPU-only library with a daemon
@@ -312,7 +371,7 @@ Executed on **aarch64-linux**, using Zig **0.17.1**:
   no-allocation claim. An x86_64-target semantic compile also passed, but was
   **not** a linked/native x86_64 package or wrapper execution test.
 
-Measured installed CPU layouts (bytes; both aligned to 65,536):
+Milestone-02 installed CPU layouts, **before streaming** (bytes; aligned to 65,536):
 
 | Component | Default sizing | Small test sizing |
 | --- | ---: | ---: |
@@ -322,7 +381,7 @@ Measured installed CPU layouts (bytes; both aligned to 65,536):
 | Capture state | 10,320 | 2,160 |
 | Worker, including stack | 9,502,720 | 1,114,112 |
 
-The CUDA executable's `main.storage` ELF symbol also measures 15,663,104 bytes;
+At milestone 02 the CUDA executable's `main.storage` ELF symbol measured 15,663,104 bytes;
 that inspection did not execute CUDA. Wayland pixel backing adds 51,200 bytes,
 and the separately budgeted main stack remains as described above.
 
@@ -331,6 +390,57 @@ sub-agent review was available. Review fixes included native decoder-state
 retention, fail-closed GPU initialization, driver-aware linking and preserving
 Nix-path provisioning. **NVIDIA execution, a physical microphone, target-desktop
 focus/click-through and recognition quality/latency remain pending milestone 09.**
-Streaming (04), asynchronous restart (05), broader recovery (07) and reactive UI
-(08) are not claimed here. Milestone 03 installation evidence is recorded in the
+This historical milestone-02 evidence does not cover streaming (04), asynchronous
+restart (05), broader recovery (07) or reactive UI (08). Milestone 03 installation evidence is recorded in the
 [installation guide](installation.md).
+
+### Recorded milestone-04 verification
+
+Executed on **aarch64-linux**, retaining **Zig 0.17.1**:
+
+- The first streaming regression failed against the short-reply implementation
+  (`decode_count`: expected 1 during recording, found 0). Pause/context and sizing
+  cases were then added through red/green cycles at the same public seam.
+  All **19 standard tests** pass, directly and through `zig build test`, including
+  a simulated 130 seconds of recording, ordered joins, a short trailing window,
+  stop during background decoding, repeated words, exact/overflowing text and
+  backlog capacity, late completion after failure and immutable borrowed PCM.
+- ReleaseSafe development and installed default CUDA/CPU builds passed, including
+  the same standard suite in package `checkPhase`. Zig/Nix formatting passed.
+- Separate `module-config`, `sizing`, `native-smoke`, `capture-inference`,
+  `model-failure` and `backend-required` consumers passed. All twelve sizing inputs
+  reached installed binaries, including non-default streaming settings.
+- The new `streaming` consumer **actually ran real CPU tiny.en recognition** with
+  native PipeWire capture and Wayland publication. In each of two sessions, a
+  ten-second window completed while capture remained open and the previous
+  clipboard stayed intact; a further window was decoded during finalization,
+  followed by one complete publication. This is not sustained target-GPU or
+  comprehensive boundary-quality acceptance.
+- `session-vm-tcg` **actually executed successfully**, about **615 seconds**:
+  installed user service, environment gating, model loading, virtual microphone,
+  native indicator/clipboard and teardown. Its explicitly substituted decoder
+  remains test-only; expected output now accounts for one result per decoded
+  window. This is session integration, not speech recognition. The KVM variant
+  was not executed: this host has no `/dev/kvm`.
+- Source/lifetime and undefined-symbol review found no new application allocator
+  path. The audio ring, prompt, decoder result and short-tail padding are typed
+  static fields, including error/unwind paths. Native whisper prompt tokenization
+  and other genuine dependency allocations remain exempt. No RSS-based proof is
+  claimed. The conservative main-thread stack budget remains 16 KiB.
+- Standards/spec self-review used parent **`86fbdbc9`**; no blocking findings
+  remain. No independent sub-agent reviewer was available. Cleanup is deferred;
+  no C-adapter migration, compiler-pin change or automatic flake/CI check was added.
+
+Measured installed layouts (bytes, alignment 65,536):
+
+| Component | Default CPU sizing | Installation example sizing |
+| --- | ---: | ---: |
+| Whole `Storage` | 19,529,728 | 12,517,376 |
+| Session windows, transcript and metadata | 6,808,704 | 10,244,248 |
+| Worker, including stack, prompt and padding | 9,502,720 | 2,228,224 |
+
+These totals already include padding/alignment and the worker stack. Typed layout
+can absorb new fields into existing alignment padding; do not sum rounded
+component totals as a substitute for the whole `Storage` measurement. Wayland
+pixel backing remains separately 51,200 bytes. Physical microphone, NVIDIA,
+boundary quality/latency and target-desktop acceptance remain milestone 09.

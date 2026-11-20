@@ -78,7 +78,8 @@ with subtest("module package, local model and all sizing overrides reach the ins
     assert machine.succeed(f"readlink /proc/{pid}/exe").strip() == binary
     footprint = dict(line.split("=") for line in user("dictation footprint").splitlines())
     expected = dict(transcript_bytes=4096, control_clients=4, clipboard_slots=2,
-                    transfers=2, audio_samples=640000, device_slots=4,
+                    transfers=2, audio_samples=640000, audio_windows=4,
+                    window_min_samples=64000, pause_samples=16000, context_bytes=128, device_slots=4,
                     worker_stack_bytes=2097152, inference_threads=2)
     assert all(int(footprint[k]) == v for k, v in expected.items())
     assert int(footprint["static_bytes"]) % int(footprint["alignment"]) == 0
@@ -98,7 +99,7 @@ with subtest("installed toggle drives real capture, visible indicator and native
     machine.sleep(2)  # metadata delivery and the failure pulse clearing
     user("grim /home/alice/idle.png")
     # Use one user shell for the active recording: repeated PAM/driver roundtrips
-    # under TCG otherwise consume the bounded short-reply audio bank themselves.
+    # under TCG otherwise add irrelevant input and delay the stop command.
     ready = "until journalctl --user -u dictation.service -b -o cat | grep -q 'capture ready'; do sleep .1; done"
     user(
         "set -euo pipefail; dictation toggle; "
@@ -111,10 +112,11 @@ with subtest("installed toggle drives real capture, visible indicator and native
     assert "AudioCapacity" not in daemon_log()
     user("python3 -c 'from PIL import Image; assert Image.open(\"/home/alice/idle.png\").convert(\"RGB\").tobytes() != Image.open(\"/home/alice/recording.png\").convert(\"RGB\").tobytes()'")
     wait("journalctl --user -u dictation.service -b -o cat | grep -q 'dictation: copied'")
-    assert user("wl-paste --no-newline") == "Virtual microphone input reached inference."
     journal = daemon_log()
+    decoded = journal.count("test inference adapter: non-silent PCM")
+    assert decoded >= 1
+    assert user("wl-paste --no-newline") == " ".join(["Virtual microphone input reached inference."] * decoded)
     assert "Virtual microphone input reached inference" not in journal
-    assert journal.count("test inference adapter: non-silent PCM") == 1
     assert journal.count("model ready") == 1
 
 with subtest("desktop shutdown stops the service and releases active capture and clipboard ownership"):

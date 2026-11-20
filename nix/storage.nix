@@ -11,7 +11,31 @@
     default = 480000;
     min = 1;
     max = 9600000;
-    description = "Mono 16 kHz F32 samples; four bytes each. Exhaustion fails the session.";
+    description = "Maximum mono 16 kHz F32 samples per recycled window, four bytes each; not a session-duration cap.";
+  };
+  audioWindows = {
+    default = 3;
+    min = 2;
+    max = 16;
+    description = "Audio slots including the decoder borrow, queued windows and current capture window. Backlog exhaustion fails explicitly.";
+  };
+  windowMinSamples = {
+    default = 48000;
+    min = 1;
+    max = 9600000;
+    description = "Minimum window samples before a pause can seal it; at most audioSamples. Stop always seals a shorter tail.";
+  };
+  pauseSamples = {
+    default = 8000;
+    min = 1;
+    max = 9600000;
+    description = "Consecutive quiet samples for a pause boundary; at most windowMinSamples.";
+  };
+  contextBytes = {
+    default = 256;
+    min = 0;
+    max = 4096;
+    description = "Maximum prior current-session transcript bytes used as decoder prompt context, plus one NUL byte of worker storage. Zero disables context.";
   };
   deviceSlots = {
     default = 32;

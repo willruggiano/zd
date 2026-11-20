@@ -16,6 +16,10 @@ in
   modelPath ? (callPackage ./models.nix { }).large-v3-turbo,
   whisperLibrary ? callPackage ./whisper.nix { inherit cudaSupport; },
   audioSamples ? storage.audioSamples.default,
+  audioWindows ? storage.audioWindows.default,
+  windowMinSamples ? storage.windowMinSamples.default,
+  pauseSamples ? storage.pauseSamples.default,
+  contextBytes ? storage.contextBytes.default,
   deviceSlots ? storage.deviceSlots.default,
   workerStackBytes ? storage.workerStackBytes.default,
   inferenceThreads ? storage.inferenceThreads.default,
@@ -70,6 +74,10 @@ stdenv.mkDerivation (finalAttrs: {
     pub const clipboard_slots: usize = ${toString clipboardSlots};
     pub const transfers: usize = ${toString transfers};
     pub const audio_samples: usize = ${toString audioSamples};
+    pub const audio_windows: usize = ${toString audioWindows};
+    pub const window_min_samples: usize = ${toString windowMinSamples};
+    pub const pause_samples: usize = ${toString pauseSamples};
+    pub const context_bytes: usize = ${toString contextBytes};
     pub const device_slots: usize = ${toString deviceSlots};
     pub const worker_stack_bytes: usize = ${toString workerStackBytes};
     pub const inference_threads: usize = ${toString inferenceThreads};
@@ -122,12 +130,26 @@ stdenv.mkDerivation (finalAttrs: {
           clipboardSlots = 2;
           transfers = 1;
           audioSamples = 160;
+          audioWindows = 2;
+          windowMinSamples = 80;
+          pauseSamples = 40;
+          contextBytes = 16;
           deviceSlots = 2;
           workerStackBytes = 1048576;
           inferenceThreads = 1;
         };
       in
       {
+        streaming = callPackage ./smoke.nix {
+          package = cpu.override {
+            audioSamples = 160000;
+            audioWindows = 8;
+            windowMinSamples = 160000;
+            contextBytes = 128;
+          };
+          withCaptureTest = true;
+          withStreamingTest = true;
+        };
         capture-inference = callPackage ./smoke.nix {
           package = cpu;
           withCaptureTest = true;

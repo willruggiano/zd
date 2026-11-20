@@ -12,7 +12,7 @@ const sizes = @import("config.zig").sizes;
 // Every mutable long-lived application workspace, including client-only state,
 // contributes to this actual typed layout. @sizeOf includes alignment/padding.
 const Storage = struct {
-    session: dictation.Session(sizes.transcript_bytes, sizes.audio_samples) = .{},
+    session: dictation.Session(sizes.transcript_bytes, sizes.windows()) = .{},
     desktop: wayland.Desktop = .{},
     server: control.Control = .{},
     client: control.Toggle = .{},
@@ -42,7 +42,7 @@ fn stop(_: c_int) callconv(.c) void {
 pub export fn main(argc: c_int, argv: [*][*:0]u8) c_int {
     _ = c.signal(c.SIGPIPE, ignore);
     if (argc == 2 and std.mem.eql(u8, std.mem.span(argv[1]), "footprint")) {
-        const output = std.mem.print(&storage.formatting, "static_bytes={d}\nalignment={d}\nsession_bytes={d}\nwayland_bytes={d}\ncontrol_bytes={d}\nclient_bytes={d}\ntranscript_bytes={d}\nclipboard_slots={d}\ncontrol_clients={d}\ntransfers={d}\nwayland_backing_bytes={d}\naudio_samples={d}\ndevice_slots={d}\nworker_stack_bytes={d}\ninference_threads={d}\ncapture_bytes={d}\nworker_bytes={d}\n", .{ @sizeOf(Storage), @alignOf(Storage), @sizeOf(@TypeOf(storage.session)), @sizeOf(wayland.Desktop), @sizeOf(control.Control), @sizeOf(control.Toggle), sizes.transcript_bytes, sizes.clipboard_slots, sizes.control_clients, sizes.transfers, wayland.backing_bytes, sizes.audio_samples, sizes.device_slots, sizes.worker_stack_bytes, sizes.inference_threads, @sizeOf(audio.Capture), @sizeOf(inference.Worker) }) catch unreachable;
+        const output = std.mem.print(&storage.formatting, "static_bytes={d}\nalignment={d}\nsession_bytes={d}\nwayland_bytes={d}\ncontrol_bytes={d}\nclient_bytes={d}\ntranscript_bytes={d}\nclipboard_slots={d}\ncontrol_clients={d}\ntransfers={d}\nwayland_backing_bytes={d}\naudio_samples={d}\naudio_windows={d}\nwindow_min_samples={d}\npause_samples={d}\ncontext_bytes={d}\ndevice_slots={d}\nworker_stack_bytes={d}\ninference_threads={d}\ncapture_bytes={d}\nworker_bytes={d}\n", .{ @sizeOf(Storage), @alignOf(Storage), @sizeOf(@TypeOf(storage.session)), @sizeOf(wayland.Desktop), @sizeOf(control.Control), @sizeOf(control.Toggle), sizes.transcript_bytes, sizes.clipboard_slots, sizes.control_clients, sizes.transfers, wayland.backing_bytes, sizes.audio_samples, sizes.audio_windows, sizes.window_min_samples, sizes.pause_samples, sizes.context_bytes, sizes.device_slots, sizes.worker_stack_bytes, sizes.inference_threads, @sizeOf(audio.Capture), @sizeOf(inference.Worker) }) catch unreachable;
         _ = c.write(1, output.ptr, output.len);
         return 0;
     }
@@ -123,11 +123,15 @@ fn daemon() !void {
                     report(error.ModelBackendInitialization);
                 },
                 .complete, .failed => |state| {
-                    if (state == .complete) storage.session.complete(storage.worker.result[0..storage.worker.result_len], &effects) else {
+                    if (state == .complete) {
+                        storage.session.complete(storage.worker.result[0..storage.worker.result_len], &effects);
+                        platform.diagnostic("dictation: window decoded\n");
+                    } else {
                         effects.problem(storage.worker.problem);
-                        storage.session.fail(&effects);
+                        storage.session.inferenceFailed(&effects);
                     }
                     storage.worker.release();
+                    storage.session.advance(&effects);
                 },
                 else => {},
             }
@@ -137,6 +141,7 @@ fn daemon() !void {
         if (storage.fixture_due != 0 and now >= storage.fixture_due) {
             storage.fixture_due = 0;
             storage.session.complete("Fixture dictation result.", &effects);
+            storage.session.advance(&effects);
         }
         desktop.tick(now);
         while (c.wl_display_prepare_read(desktop.display) != 0) {
@@ -178,12 +183,14 @@ const Effects = struct {
         if (storage.in_audio_callback) storage.stop_capture = true else storage.capture.stop();
         return true;
     }
-    pub fn decode(_: *Effects, samples: []const f32) bool {
+    pub fn decode(_: *Effects, samples: []const f32, context: []const u8) bool {
         if (storage.fixture) {
             storage.fixture_due = platform.now() + 350;
             return true;
         }
-        return storage.worker.decode(samples);
+        const accepted = storage.worker.decode(samples, context);
+        if (accepted) platform.diagnostic("dictation: decoding window\n");
+        return accepted;
     }
     pub fn show(self: *Effects, phase: dictation.Indicator) void {
         storage.desktop.show(phase);

@@ -8,7 +8,8 @@ import subprocess
 import sys
 import time
 
-binary, speech = sys.argv[1:]
+binary, speech = sys.argv[1:3]
+streaming = sys.argv[3:] == ["--streaming"]
 
 
 def run(*args):
@@ -65,6 +66,7 @@ for index, (source, other, feed) in enumerate([
     default(source)
     serial = node(source)["info"]["props"]["object.serial"]
     previous = clipboard()
+    decoded_before = log().count("dictation: window decoded")
     toggle()
     eventually(lambda: log().count("capture ready") == index + 1)
     assert str(node("dictation.capture")["info"]["props"]["target.object"]) == str(serial)
@@ -74,9 +76,18 @@ for index, (source, other, feed) in enumerate([
     subprocess.run(["pw-cat", "--playback", "--target", feed, speech], check=True, timeout=40)
     time.sleep(0.3)
     assert clipboard() == previous
+    if streaming:
+        # A forced ten-second window finishes while capture is still active.
+        # Keep the microphone open until actual CPU completion, not merely enqueue.
+        eventually(lambda: log().count("dictation: window decoded") > decoded_before)
+        assert node("dictation.capture") is not None
+        assert clipboard() == previous
+        assert log().count("dictation: copied") == index
     toggle()
     eventually(lambda: node("dictation.capture") is None)
     eventually(lambda: log().count("dictation: copied") == index + 1)
+    if streaming:
+        eventually(lambda: log().count("dictation: window decoded") >= decoded_before + 2)
     result = clipboard().lower()
     assert b"ask not what your country" in result, result
     assert b"ask not" not in log().lower().encode()
