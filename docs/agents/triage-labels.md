@@ -6,7 +6,7 @@ Triage state is separate from execution progress.
 | Label | Meaning |
 | --- | --- |
 | needs-triage | Needs evaluation |
-| needs-info | Waiting for clarification |
-| ready-for-agent | Specified sufficiently for agent implementation |
+| needs-info | Needs clarification |
+| ready-for-agent | Enough information for agent implementation |
 | ready-for-human | Requires human work |
-| wontfix | Will not be pursued |
+| wontfix | The project will not do this work. |

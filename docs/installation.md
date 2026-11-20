@@ -1,9 +1,11 @@
 # NixOS graphical-session installation
 
-The flake exports **`nixosModules.default`**. Use this checkout (for example a
-`git+file:///absolute/path/to/dictation?ref=next` flake input), or a published
-revision containing this module, as your `zd` input; pin it in `flake.lock`.
-Add it to your existing NixOS configuration's module list:
+The flake exports **`nixosModules.default`**.
+Use this checkout or a published revision with this module as your `zd` input.
+For a local checkout, an example input is
+`git+file:///absolute/path/to/dictation?ref=next`.
+Pin the revision in `flake.lock`.
+Add the module to your existing NixOS configuration:
 
 ```nix
 modules = [
@@ -13,28 +15,34 @@ modules = [
 ];
 ```
 
-Rebuild/switch the system normally. The module installs `dictation` in the system
-profile and a **systemd user service**, not a root microphone daemon. Bind
-`dictation toggle` in your existing shortcut launcher; see
-[runtime behavior](runtime.md#run) for the recording workflow and limitations.
+Rebuild the system with your normal procedure. Switch to the new configuration.
+The module installs `dictation` in the system profile and adds a **systemd user
+service**. It does not run the microphone daemon as root.
+Bind `dictation toggle` in your existing shortcut launcher.
+See [runtime behavior](runtime.md#run) for the recording workflow and limits.
 
 ## Desktop and driver prerequisites
 
-- A compositor implementing **layer-shell and ext-data-control-v1**. Stock
-  GNOME/Mutter is not supported. There is no compositor-specific fallback.
-- A functioning Wayland session and its normal `XDG_RUNTIME_DIR`. No Home Manager,
-  UWSM or Hyprland module/package is required or enabled by this module.
-- The default package uses **CUDA/large-v3-turbo**, provisioned and hash-pinned by
-  Nix. Its NVIDIA driver must already be installed and compatible, with driver
-  libraries available through `/run/opengl-driver/lib`. The module does not set
-  up a GPU driver or select a compositor. The flake permits its unfree CUDA
-  toolkit dependencies; application code remains MIT licensed.
-- The module enables user PipeWire and its audio support. NixOS normally enables
-  WirePlumber with PipeWire and makes it wanted by `pipewire.service`; no separate
-  session-manager launcher is installed. Do not configure system-wide PipeWire
-  for this user-service integration.
+- Use a compositor with **layer-shell and ext-data-control-v1** support.
+  Stock GNOME/Mutter does not support these requirements.
+  There is no compositor-specific fallback.
+- Use a working Wayland session with its normal `XDG_RUNTIME_DIR`.
+  This module does not require or enable Home Manager, UWSM or a Hyprland module
+  or package.
+- The default package uses **CUDA/large-v3-turbo**. Nix supplies these dependencies
+  with pinned hashes. Install a compatible NVIDIA driver before use.
+  Make its libraries available through `/run/opengl-driver/lib`.
+  The module does not configure a GPU driver or select a compositor.
 
-The session supplies lifetime and environment; PipeWire supplies audio:
+  The flake permits unfree CUDA toolkit dependencies.
+  Application code has an MIT license.
+- The module enables user PipeWire and its audio support.
+  NixOS normally enables WirePlumber with PipeWire and makes it a wanted
+  dependency of `pipewire.service`. The module does not install a separate
+  launcher for the session manager.
+  Do not configure system-wide PipeWire for this user service.
+
+The desktop controls the session lifetime and environment. PipeWire supplies audio:
 
 ```text
 desktop
@@ -44,31 +52,35 @@ desktop
 ```
 
 See [the module](../nix/module.nix) for exact unit settings.
-**Service ordering is not microphone readiness.** Wait for the model-ready
-message before recording. GPU readiness and fallback are explained in
-[runtime operation](runtime.md#run).
+**Service ordering is not microphone readiness.**
+Before recording, wait for the model-ready message.
+See [runtime operation](runtime.md#run) for GPU readiness and fallback behavior.
 
 ## The desktop owns the session
 
-`ConditionEnvironment` checks the **user manager's environment**, not just the
-terminal or shortcut launcher's environment. Once the compositor's socket exists,
-your existing desktop session startup must import the relevant variables before
-activating its session target:
+`ConditionEnvironment` examines the **user manager's environment**.
+The terminal or shortcut launcher's environment alone is not sufficient.
+After the compositor socket is ready, import the applicable variables through
+your existing desktop startup procedure.
+Then activate the desktop's session target.
 
 ```sh
 systemctl --user import-environment WAYLAND_DISPLAY
 # Your desktop then starts its normal session target.
 ```
 
-`XDG_RUNTIME_DIR` is normally supplied by logind/PAM; the compositor must belong
-to that same user/runtime directory. Import only intended variables, not the
-entire shell environment. **Starting a named target never imports environment
-variables.** The generic target is not a compositor launcher or a session
-supervisor: the containing desktop owns its lifetime. In the pinned systemd it
-also has `RefuseManualStart=yes` and `StopWhenUnneeded=yes`.
+logind/PAM normally supplies `XDG_RUNTIME_DIR`.
+The compositor must use the same user and runtime directory.
+Import only the necessary variables, not the entire shell environment.
+**A target start never imports environment variables.**
 
-If your existing session setup does not already own the generic target, a
-minimal desktop-owned target can be declared alongside the module:
+The generic target is not a compositor launcher or a session supervisor.
+The desktop controls its lifetime.
+In the pinned systemd, the target also has `RefuseManualStart=yes` and
+`StopWhenUnneeded=yes`.
+
+If your desktop does not already own the generic target, add a desktop-owned
+target alongside the module:
 
 ```nix
 systemd.user.targets.my-desktop = {
@@ -77,7 +89,7 @@ systemd.user.targets.my-desktop = {
 };
 ```
 
-Your desktop's lifecycle hooks then perform:
+Use the desktop's lifecycle hooks to run these commands:
 
 ```sh
 # Startup, after WAYLAND_DISPLAY is set and its socket is ready:
@@ -89,13 +101,15 @@ systemctl --user stop my-desktop.target
 systemctl --user unset-environment WAYLAND_DISPLAY
 ```
 
-This is an example for the existing session owner, **not** an application helper
-or a replacement desktop manager. Do not add it when the desktop already owns a
-session target. Leaving a session target active after logout also leaves its
-services active; lingering alone does not represent a graphical session. There
-is one dictation daemon per UID, not independent daemons per simultaneous display.
+This example configures the existing session owner.
+It is **not** an application helper or a replacement desktop manager.
+If the desktop already owns a session target, do not add this target.
+An active session target keeps its services active after logout.
+User lingering alone does not represent a graphical session.
+One dictation daemon serves each UID, not each simultaneous display.
 
-After enabling/updating the module during an already-running graphical session:
+After a module update during an active graphical session, run these commands.
+Use them also if you enable the module during that session.
 
 ```sh
 systemctl --user daemon-reload
@@ -104,25 +118,30 @@ systemctl --user restart dictation.service
 journalctl --user -u dictation.service -b
 ```
 
-A missing environment causes a condition skip, not successful startup. Importing
-a variable does not itself retry a skipped unit; start/restart it (or begin the
-next desktop session). A present but invalid display or unsupported protocol
-fails with sanitized application diagnostics. For deliberate shutdown of only
-dictation use `systemctl --user stop dictation.service`; stopping the desktop's
-target also affects its other services.
+If the required environment is missing, systemd skips the unit. The service does
+not start successfully. An environment import does not retry a skipped unit.
+Start or restart the unit, or start the next desktop session.
+An invalid display or unsupported protocol causes a failure with sanitized
+application diagnostics.
 
-For daemon-fatal failures, the unit retries under its configured restart policy
-and systemd start limits. Restore the dependency (or rebuild
-with larger capacities) before retrying. If a start limit was reached, run
-`systemctl --user reset-failed dictation.service`, then restart it.
+To stop only dictation, use `systemctl --user stop dictation.service`.
+A stop of the desktop target also affects its other services.
+After a daemon-fatal failure, the unit retries according to its restart policy
+and systemd start limits.
+Before a retry, restore the dependency or rebuild with larger capacities.
+If the unit reached a start limit, run `systemctl --user reset-failed dictation.service`.
+Then restart the unit.
+
 [Failure and recovery](runtime.md#failure-and-recovery) defines which errors
-permit a fresh toggle, which require restart, and what happens to clipboard
-ownership.
+permit a new toggle and which require a restart.
+It also describes the effect on clipboard ownership.
 
 ## Model and whole-program storage configuration
 
-Options live under `services.dictation`. `package` selects the base package;
-`modelPath` defaults to that package's provisioned model. For example:
+Options are under `services.dictation`.
+`package` selects the base package.
+`modelPath` defaults to the model that the package supplies.
+For example:
 
 ```nix
 services.dictation = {
@@ -149,42 +168,50 @@ services.dictation = {
 };
 ```
 
-An absolute **string** stays a host path, read by the service user; the module
-does not create/chown/download that file. A Nix path or model derivation is
-provisioned into the store. Do not put private data in Nix paths expecting the
-store to keep it secret. Neither form creates a runtime download path. An
-unreadable/incompatible model leaves the application failed, with no model or
-fixture substitution and no microphone activity. GPU unavailability separately
-allows upstream CPU fallback with a warning. Restart after repairing the file.
+An absolute **string** stays a host path. The service user reads that file.
+The module does not create the file, change its owner or download it.
+Nix copies a Nix path or model derivation into the store.
 
-Sizing options use the same names as package arguments. Module sizing overrides
-the base package's sizing values. Changing sizing or
-the embedded model path rebuilds Zig; no runtime heap, arena, configuration parser
-or model-path command-line flag is introduced. The read-only
-`services.dictation.finalPackage` is the installed, configured derivation.
-[nix/storage.nix](../nix/storage.nix) defines option descriptions, defaults and
-ranges. Use [runtime storage accounting](runtime.md#static-storage-and-allocation-audit)
-for the relationships between configuration and memory use. Module types
-reject out-of-range or incompatible settings during evaluation; Zig compilation
-independently rejects invalid and overflowing layouts before deployment.
+**Do not put private data in Nix paths. The store does not keep it secret.**
+Neither form causes runtime downloads.
 
-Inspect the **installed executable**, not just Nix option values:
+An unreadable or incompatible model causes application failure without microphone
+activity. The daemon does not substitute another model or fixture output.
+GPU unavailability separately permits upstream CPU fallback with a warning.
+After you repair the model file, restart the daemon.
+
+Sizing options use the same names as package arguments.
+Module sizing overrides the base package's sizing values.
+A change to sizing or the embedded model path rebuilds Zig.
+It does not add a runtime heap, arena, configuration parser or model-path command-line flag.
+The read-only `services.dictation.finalPackage` is the installed, configured derivation.
+
+[nix/storage.nix](../nix/storage.nix) defines option descriptions, defaults and ranges.
+See [runtime storage accounting](runtime.md#static-storage-and-allocation-audit)
+for the relationship between configuration and memory use.
+Module types reject out-of-range or incompatible settings during evaluation.
+Zig compilation independently rejects invalid and overflowing layouts before installation.
+
+Examine the **installed executable**, not only Nix option values:
 
 ```sh
 /run/current-system/sw/bin/dictation footprint
 ```
 
-The accounting guide explains what this total includes and excludes; it is not a total
-RSS/VRAM limit. Previously measured layouts, including the example above, live
-in the [verification evidence](verification.md#recorded-milestone-08-verification).
+The accounting guide explains the contents and exclusions of this total.
+It is not a total RSS or VRAM limit.
+See the [verification evidence](verification.md#recorded-milestone-08-verification)
+for previous measurements, including the configuration example above.
 
 ## Shutdown
 
-Stopping the desktop session stops dictation. SIGTERM requests orderly teardown.
-Systemd can force termination when the [unit's timeout](../nix/module.nix) expires. See
-[runtime privacy and shutdown](runtime.md#privacy-and-shutdown) for microphone,
-clipboard, lock/suspend and retention boundaries.
+A desktop session stop also stops dictation. SIGTERM requests orderly teardown.
+Systemd can force termination when the [unit's timeout](../nix/module.nix) expires.
+See [runtime privacy and shutdown](runtime.md#privacy-and-shutdown) for microphone,
+clipboard and data retention limits.
+That section also describes lock and suspend behavior.
 
-For module and installed-session checks, use the
-[test catalog](testing.md#module-configuration); past installation results are in
-[local evidence](verification.md#recorded-milestone-03-verification).
+Use the [test catalog](testing.md#module-configuration) for module and
+installed-session checks.
+See [local evidence](verification.md#recorded-milestone-03-verification) for past
+installation results.

@@ -13,23 +13,26 @@ wl-paste --no-newline
 ```
 
 `--fixture` replaces microphone capture and inference with synthetic input and
-a labelled fixed transcript after a short delay. The fixture is defined in
-[main.zig](../src/main.zig).
+a labeled fixed transcript after a short delay.
+[main.zig](../src/main.zig) defines the fixture.
 It does not open a microphone or load a model. Wayland rendering, control IPC,
 clipboard ownership and clipboard transfers are real. There is no silent fallback
-to this mode on native/model failure. The CPU package avoids requiring an NVIDIA
-driver to exercise it.
+to this mode after a native or model failure. With the CPU package,
+this mode does not require an NVIDIA driver.
 
 The [desktop protocol requirements](installation.md#desktop-and-driver-prerequisites)
-still apply. One synthetic PCM event briefly moves the recording bars, then the
-meter settles. This is not a live microphone-volume demo. Indicator behavior is
-described in the [runtime guide](runtime.md#run).
+still apply. One synthetic PCM event briefly moves the recording bars.
+The meter then returns to its rest position.
+This is not a live microphone-volume demo.
+The [runtime guide](runtime.md#run) describes indicator behavior.
 
-The daemon uses the same `dictation-<uid>` control socket as normal mode, so stop
-one daemon before starting another. SIGINT/SIGTERM shuts it down. A successful
-toggle reply acknowledges the command, not successful copying. A toggle during
-finalization starts replacement capture through the same public state machine.
-The old completion stays pending to simulate delayed cancellation, but cannot
+The daemon uses the same `dictation-<uid>` control socket as normal mode.
+Before you start another daemon, stop the current daemon.
+SIGINT or SIGTERM shuts down the daemon. A successful
+toggle reply confirms command acceptance, not successful publication.
+
+A toggle during finalization starts replacement capture through the same public state machine.
+The old completion stays pending to simulate delayed cancellation. It cannot
 publish. This delay is not GPU latency evidence.
 
 For the installed-consumer check and its limits, see `native-smoke` in the
