@@ -400,6 +400,13 @@ classification uses only borrowed strings and fixed diagnostic literals.
 
 ## Development and checks
 
+The development shell includes `gh-stack`, `gh` and Git from pinned Nixpkgs for
+PR maintenance only; they are not dependencies of the installed daemon. Invoke
+`gh-stack` directly without a per-user extension installation, and authenticate
+with `gh auth login` if needed. For jj-managed branches, use
+`gh-stack link <stack-number> <pull-request-url>` to append an existing PR without
+changing local stack tracking or checking out branches.
+
 ```sh
 nix develop                       # CPU toolchain; no model download needed
 zig test src/tests.zig             # fast checks: Zig standard runner only
