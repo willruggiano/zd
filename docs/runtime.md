@@ -1,6 +1,6 @@
 # Runtime guide
 
-Run the foreground daemon and understand the contracts between its parts.
+Use this guide to run the foreground daemon. It explains the contracts between modules.
 Use [NixOS installation](installation.md) for an installed user service.
 
 - [Run](#run)
@@ -12,11 +12,11 @@ Use [NixOS installation](installation.md) for an installed user service.
 
 For development commands and verification, start at
 [CONTRIBUTING](../CONTRIBUTING.md). Code owns API details, constants and local
-algorithms. This guide links to those sources rather than repeating them.
+algorithms. This guide links to those sources instead of copying them.
 
 ## Run
 
-First check the [desktop prerequisites](installation.md#desktop-and-driver-prerequisites).
+First make sure that your desktop meets the [prerequisites](installation.md#desktop-and-driver-prerequisites).
 
 ```sh
 nix build                         # CUDA + large-v3-turbo
@@ -42,11 +42,11 @@ ready --toggle--> recording --toggle--> finalization --success/copy--> ready
 ```
 
 Restart discards the old session, not the previous clipboard. Capture starts
-while old inference finishes cancelling. A toggle during recording always means
+while cancellation of old inference continues. A toggle during recording always means
 stop, even when background inference is active. A successful toggle reply means
-that the command was accepted, not that text was copied.
+that the daemon accepted the command. It does not mean that the daemon copied text.
 
-A toggle during loading shows loading but does not open the microphone or queue
+A toggle during loading shows loading. It does not open the microphone or queue
 a recording. Toggle again after readiness. A systemd `active` state alone does
 not prove model readiness or CUDA execution.
 
@@ -61,16 +61,16 @@ recognition, not a silent substitute for the default model. Use
 
 ### Limits
 
-- There is no recording timer. The transcript must fit, and inference must keep
-  pace with capture. Capacity failure stops the session; it does not silently
-  drop audio or truncate text.
-- Window boundaries can affect words and punctuation. Text context helps, but
-  there is no full-session second pass after old audio is released.
+- There is no recording timer. The transcript must fit its capacity. Inference must keep
+  pace with capture. Capacity failure stops the session. It does not silently
+  discard audio or truncate text.
+- Window boundaries can affect words and punctuation. Text context helps.
+  After inference releases old audio, no second pass over the full session is possible.
 - Cancellation is cooperative. It does not preempt GPU work. A replacement
   recording can exhaust its backlog while old inference still holds an audio
   window.
-- The daemon is shared by one UID in a network namespace. Simultaneous graphical
-  sessions for that UID are not isolated.
+- One daemon serves each UID in a network namespace. Simultaneous graphical
+  sessions for that UID share the daemon.
 
 Throughput, recognition quality and physical-desktop behavior require
 [target validation](validation.md). A successful build or headless test is not
@@ -81,34 +81,33 @@ that evidence.
 | Failure | Next action | Clipboard effect |
 | --- | --- | --- |
 | Silence or empty recognition | Toggle for a new session. | No replacement. |
-| Missing/removed microphone, capture/inference/publication error, audio/text capacity | Fix the cause if needed, then toggle. | No partial/error transcript. |
-| Model initialization | Fix the model/backend, then restart the daemon. | No model or fixture substitution. |
-| PipeWire/Wayland connection loss, device/output table exhaustion | Restore the dependency or increase capacity; restart. | The daemon releases its selection and transfers. |
+| Missing or removed microphone, capture error, inference error, publication error, audio or text capacity | If necessary, correct the cause. Then toggle. | No partial text or error text. |
+| Model initialization | Correct the model or backend problem. Restart the daemon. | No model or fixture substitution. |
+| PipeWire or Wayland connection loss, device or output table exhaustion | Restore the dependency or increase capacity. Restart the daemon. | The daemon releases its selection and transfers. |
 
 A new session selects the current default microphone. A running session stays
-on its selected source; a default change does not retarget it. Missing protocols
+on its selected source. A default change does not change that source. Missing protocols
 are errors, not a request to use a compositor-specific fallback.
 
-A recoverable failure permits new capture while cancelled inference still
-unwinds. Late results from that old session cannot publish or alter the new
-session. A daemon restart instead reloads the model and stays idle; it does not
+A recoverable failure permits new capture before canceled inference returns. Late results from that old session cannot publish or alter the new
+session. After a restart, the daemon reloads the model and stays idle. It does not
 resume recording. See [service recovery](installation.md#the-desktop-owns-the-session)
 for systemd retries and start limits.
 
-Clipboard preservation requires a surviving owner and connection. After daemon
-or compositor loss, its old transcript may no longer be pasteable without an
-external clipboard manager. This is not publication of partial/error text.
-If Wayland is unavailable, diagnostics and exit status provide feedback; an
-on-screen error cannot be assumed.
+The clipboard needs an active owner and connection. After daemon
+or compositor loss, a paste of the old transcript may require an
+external clipboard manager. This loss does not mean that the daemon published partial text or error text.
+If Wayland is unavailable, diagnostics and exit status provide feedback.
+Do not expect an on-screen error.
 
 ## Privacy and shutdown
 
-Audio stays transient. The application creates no recording files, transcript
-history or logs of dictated contents. Clearing application storage is a
-retention policy, not a promise to erase every copy inside dependencies.
+Audio storage is temporary. The application creates no recording files, transcript
+history or logs of dictated contents. The application clears its storage under its retention policy.
+This does not guarantee erasure of every copy inside dependencies.
 External clipboard managers can keep copied text independently.
 
-Orderly shutdown follows this ownership order:
+Orderly shutdown has this ownership order:
 
 ```text
 close capture
@@ -118,19 +117,19 @@ close capture
   -> release native resources
 ```
 
-Model initialization cannot be cancelled. The installed service's forced-stop
-timeout is separate; see [shutdown](installation.md#shutdown).
+The daemon cannot cancel model initialization. The installed service has a
+separate forced-stop timeout. See [shutdown](installation.md#shutdown).
 
-**Locking alone does not cancel recording. Cancellation on suspend is not
-promised.** Stop recording before locking or suspending if that is your intent.
-There are no bespoke lock/suspend hooks.
+**A screen lock alone does not cancel recording. Suspend does not guarantee cancellation.**
+If you do not want capture to continue, stop recording before a screen lock or suspend.
+The application has no special lock or suspend hooks.
 
 ## Dependencies and provisioning
 
 The default package requests CUDA with large-v3-turbo. GPU initialization may
 fall back to CPU with a sanitized warning. Readiness is not proof of CUDA work.
-A missing or incompatible model still fails; the daemon does not switch models
-or enter fixture mode automatically.
+A missing or incompatible model still causes failure. The daemon does not switch
+models or enter fixture mode automatically.
 
 Nix supplies the model before runtime. The daemon never downloads it. To use an
 existing local model with a package override:
@@ -141,19 +140,19 @@ inputs.zd.packages.${system}.default.override {
 }
 ```
 
-An absolute string remains a host path. A Nix path or model derivation is copied
+An absolute string remains a host path. Nix copies a Nix path or model derivation
 into the store. For service configuration, use the
 [installation example](installation.md#model-and-whole-program-storage-configuration).
 
 Use the source for current pins and build choices:
 
 - [flake.nix](../flake.nix) and [flake.lock](../flake.lock): compiler and package inputs.
-- [nix/whisper.nix](../nix/whisper.nix): nixpkgs Whisper backend/toolkit selection.
+- [nix/whisper.nix](../nix/whisper.nix): nixpkgs Whisper backend and toolkit selection.
 - [nix/models.nix](../nix/models.nix): model revisions and hashes.
 
 ## Public interface and ownership
 
-The daemon coordinates the parts; the session owns publication eligibility.
+The daemon coordinates the parts. The session decides which results can publish.
 The main relationships are:
 
 ```text
@@ -166,27 +165,27 @@ session --publish--> clipboard --serve--> Wayland readers
 
 Read [main.zig](../src/main.zig) for coordination and
 [dictation.zig](../src/dictation.zig) for the session interface. The same session
-interface drives [behavioral tests](../src/tests.zig); tests do not implement a
+interface drives [behavioral tests](../src/tests.zig). Tests do not implement a
 second state machine.
 
 ### Window boundaries and transcript assembly
 
 Capture continues while the worker decodes bounded windows. Completed text stays
-internal until stop and successful finalization. Audio can be reused only after
-inference releases it. This is why the backlog can fail even with unused
-transcript capacity: the two resources have separate owners and limits.
+internal until stop and successful finalization. The session can reuse audio only after
+inference releases it. Audio and text have separate owners and limits.
+Thus, the backlog can fail even with unused transcript capacity.
 
 The session owns window boundaries and transcript assembly. The worker owns
 native decoder state. Their algorithms and API contracts live in
 [dictation.zig](../src/dictation.zig) and [inference.zig](../src/inference.zig).
-Real boundary quality is part of target acceptance, not just deterministic tests.
+Deterministic tests alone do not prove real boundary quality. Target acceptance must include this quality.
 
 ### Restart and operation ownership
 
 Restart makes old results ineligible immediately, but cancellation does not
-release borrowed audio. New capture uses the other slots. The old result must
-return before that window can be reused. Repeated restarts replace work; they do
-not add queued user sessions.
+release borrowed audio. New capture uses the other slots. The worker must return the old result before
+the session can reuse that window. Repeated restarts replace work. They do not
+add queued user sessions.
 
 The result handoff across the worker, daemon and session has this order:
 
@@ -197,8 +196,8 @@ worker returns
   -> session can schedule next decode
 ```
 
-Publication eligibility comes from session identity, not from the decoder's
-success/cancellation return code. This protects the clipboard if cancellation
+Session identity determines publication eligibility, not the decoder's
+success or cancellation return code. This protects the clipboard if cancellation
 finishes late. Capture teardown also waits until the current native callback
 returns its buffer. See [audio.zig](../src/audio.zig),
 [inference.zig](../src/inference.zig) and the daemon loop for those local contracts.
@@ -213,8 +212,7 @@ history of events.
 
 The [Wayland storage exception](adr/0002-fixed-application-storage.md) permits
 pixel backing, not dynamic application bookkeeping. Buffer release, output
-removal and compositor ownership span both sides of the protocol. Their local
-lifetime rules are documented next to the backing and surface code.
+removal and compositor ownership span both sides of the protocol. Comments next to the backing and surface code describe their lifetime rules.
 
 ### Clipboard ownership and concurrent readers
 
@@ -222,13 +220,14 @@ Finalization and clipboard serving have separate lifetimes. New recording must
 not modify text still needed by an old paste request. Replacing a selection also
 does not cancel transfers already requested from it.
 
-[clipboard.zig](../src/clipboard.zig) owns bounded offers and readers;
+[clipboard.zig](../src/clipboard.zig) owns bounded offers and readers.
 [wayland.zig](../src/wayland.zig) supplies native protocol and nonblocking I/O.
 A failed reader can receive a prefix before EOF. That is a failed transfer, not a
 truncated successful publication. The complete offer remains available for retry.
 
-There is no Wayland paste acknowledgement. Success means publication was queued
-without a known error, not that another application received or pasted the text.
+There is no Wayland paste acknowledgment. Success means the daemon queued
+publication without a known error. It does not mean that another application
+received or pasted the text.
 
 ## Static storage and allocation audit
 
@@ -242,7 +241,7 @@ NixOS module / package arguments
 ```
 
 Use [nix/storage.nix](../nix/storage.nix) for option descriptions, defaults and
-ranges; [config.zig](../src/config.zig) checks layout constraints.
+ranges. [config.zig](../src/config.zig) validates layout constraints.
 [main.zig](../src/main.zig) owns the aggregate and footprint output. Refer to
 those sources instead of maintaining a second option or field table here.
 
@@ -251,14 +250,14 @@ those sources instead of maintaining a second option or field table here.
 ```
 
 The aggregate includes alignment, padding and the supplied worker stack.
-Component totals overlap: do not add them to the whole-program total. Main-thread
-application stack is budgeted separately in the source. Native library/driver
-allocations and Wayland pixel backing are outside that static total. It is not a
-total process RAM/VRAM limit.
+Component totals overlap. Do not add them to the whole-program total.
+Source comments give a separate budget for main-thread application stack.
+Native library allocations, driver allocations and Wayland pixel backing are
+outside that static total. It is not a total process RAM or VRAM limit.
 
-An allocation audit must follow calls across modules, startup and teardown. A
-constant RSS or a process-wide allocation trap cannot prove the contract: genuine
-native-library allocations are permitted. Use the
+An allocation audit must trace calls across modules, startup and teardown. A
+constant RSS or a process-wide allocation trap cannot prove the contract.
+The contract permits allocations internal to native libraries. Use the
 [verification policy](../CONTRIBUTING.md#verification) and
 [recorded audit evidence](verification.md), not a copied field list, as the review
 starting point.

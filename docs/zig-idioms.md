@@ -1,153 +1,188 @@
 # Idiomatic Zig: research reference
 
-These findings use Zig 0.17.1. They guide review of runtime modules, tests, build
-code and native bindings. They do not select a Wayland dependency or claim a
-completed code audit.
+These findings use Zig 0.17.1.
+They guide review of runtime modules, tests, build code and native bindings.
+They do not select a Wayland dependency or represent a complete code audit.
 
 ## Sources
 
 Use the [development shell](../CONTRIBUTING.md#development-setup) to locate the
-pinned standard-library source and docs. Check web advice against that source.
+pinned standard-library source and documentation.
+Compare web advice with that source.
 
 ### Web sources and their authority
 
-Start with the versioned official material, then verify APIs in the local source:
+Start with the versioned official material.
+Then examine APIs in the local source:
 
 - [0.17.1 language reference: style guide](https://ziglang.org/documentation/0.17.1/#Style-Guide),
   [ownership](https://ziglang.org/documentation/0.17.1/#Lifetime-and-Ownership),
   [errors](https://ziglang.org/documentation/0.17.1/#Errors) and
   [Zen](https://ziglang.org/documentation/0.17.1/#Zen).
 - [0.17.0 release notes](https://ziglang.org/download/0.17.0/release-notes.html)
-  for language, library and build-system changes inherited by 0.17.1.
-- [0.17.1 announcement](https://ziglang.org/news/0.17.1-released/): a bug-fix
-  release, not a reason to follow unversioned `master` examples.
+  for language, library and build-system changes that also apply to 0.17.1.
+- [0.17.1 announcement](https://ziglang.org/news/0.17.1-released/).
+  This is a bug-fix release. It does not justify use of unversioned `master` examples.
 - [0.16.0 release notes](https://ziglang.org/download/0.16.0/release-notes.html)
-  explain the preceding `std.Io` and entry-point changes; check their details
-  against 0.17.1 before copying code.
+  for the earlier `std.Io` and entry-point changes.
+  Before you copy code, compare those details with 0.17.1.
 
-Search also surfaced community migration guides, but the official material and
-pinned implementation were sufficient for these findings. In particular, advice
-to replace `@cImport` with `b.addTranslateC` alone misses the next deprecation in
-0.17. Treat older tutorials as explanations, not current API specifications.
+The search also found community migration guides.
+The official material and pinned implementation were sufficient for these findings.
+Advice to replace `@cImport` with `b.addTranslateC` alone omits the next deprecation in 0.17.
+Treat older tutorials as explanations, not current API specifications.
 
 ## What to emulate
 
-1. **Readable, precise names and modules.** Functions use `camelCase`, types and
-   type-producing functions `TitleCase`, other values/fields `snake_case`.
-   A file with top-level fields is itself a struct and normally uses a type name
-   (`Writer.zig`); a namespace file uses `snake_case` (`array_list.zig`).
-   Avoid redundant namespace prefixes and vague `Manager`/`Utils` wrappers.
-   Follow the glossary rather than gratuitously renaming domain concepts.
-   Use `zig fmt`; the style guide also recommends roughly 100-column lines and
-   multiline lists with trailing commas. Formatting alone does not make dense
-   code readable.
-2. **Types communicate the contract.** Use slices for bounded sequences,
-   `[]const T` for read-only borrows, `?T` for meaningful absence, error unions
-   for failure, enums/tagged unions and exhaustive switches for alternatives.
-   Prefer those over pointer/length pairs, magic sentinels or combinations of
-   booleans when they clarify the actual invariant. Keep ABI-mandated shapes at
-   the foreign boundary; do not force unions into independent flags.
-3. **Ownership and invalidation are part of the API.** Document who owns a
-   handle/buffer, how long a returned slice is valid, whether a value may move,
-   and what callbacks borrow. The standard library's container and I/O comments
-   are especially useful here. `init`/`deinit` conventions do not imply automatic
-   destruction or idempotent cleanup.
-4. **Make cleanup local and failure explicit.** Pair acquisition with `defer`
-   for scope-bound resources and `errdefer` for initialization rollback. Use
-   `try` to propagate, `catch` to recover or translate at a meaningful boundary.
-   Use assertions/`unreachable` for proven programmer invariants, not ordinary
-   device loss, malformed input or exhausted capacity. Callback-owned resources
-   still need explicit teardown after their last use; lexical cleanup is not
-   permission to release a busy Wayland buffer early.
-5. **Pass resources rather than hiding them.** Modern stdlib APIs distinguish
-   caller buffers from allocating variants and pass allocators/I/O explicitly.
-   Our runtime chooses static backing, not an allocator. Build tools and tests
-   have different constraints. A stdlib convenience is not automatically
-   allocation-free just because the call site lacks an allocator argument.
-6. **Use abstraction where it earns its keep.** Plain structs/functions,
-   comptime type factories and `anytype` are normal Zig. So are explicit runtime
-   vtables and `@fieldParentPtr` when dynamic dispatch or intrusive ownership is
-   needed. Do not replace every generic test adapter with an interface, or every
-   interface with generics. Typed boundaries should reduce obligations at call
-   sites, not merely wrap every C function or conceal casts elsewhere.
-7. **Use comptime for real static knowledge.** Capacity-specialized types,
-   checked layout arithmetic and compile-time validation fit this project well.
-   Prefer ordinary loops/functions unless specialization or comptime iteration
-   is actually needed. Avoid a reflection framework for a small fixed problem.
-8. **Test observable contracts.** Standard-library tests demonstrate both
-   success and boundary/error cases using `std.testing`. Keep our established
-   public behavioral seam; do not reorganize tests around private helpers just
-   to imitate source-file layout. See the
-   [verification policy](../CONTRIBUTING.md#verification).
+1. **Use readable, precise names and modules.**
+   Functions use `camelCase`. Types and type-producing functions use `TitleCase`.
+   Other values and fields use `snake_case`.
+
+   A file with top-level fields is itself a struct.
+   It normally uses a type name, such as `Writer.zig`.
+   A namespace file uses `snake_case`, such as `array_list.zig`.
+
+   Do not add unnecessary namespace prefixes and unclear `Manager` or `Utils` wrappers.
+   Use glossary terms instead of new names for the same domain concepts.
+   Use `zig fmt`.
+   The style guide also recommends approximately 100-column lines and multiline
+   lists with trailing commas. Formatting alone does not make complex code easy to read.
+
+2. **Use types to communicate the contract.**
+   Use slices for bounded sequences. Use `[]const T` for read-only borrows.
+   Use `?T` for meaningful absence and error unions for failure.
+   Use enums, tagged unions and exhaustive switches for alternatives.
+
+   Prefer these types when they explain an invariant more clearly than pointer/length
+   pairs, magic sentinels or combinations of booleans.
+   Keep ABI-required shapes at the foreign boundary.
+   Do not combine independent flags into a union.
+
+3. **Document ownership and invalidation as part of the API.**
+   Describe who owns each handle or buffer. Describe how long a returned slice is valid.
+   Describe whether a value can move. Describe what callbacks borrow.
+
+   The standard library's container and I/O comments give useful examples.
+   `init` and `deinit` conventions do not imply automatic destruction or idempotent cleanup.
+
+4. **Keep cleanup local and failure explicit.**
+   Pair resource acquisition with `defer` for cleanup at scope exit.
+   Use `errdefer` for initialization rollback.
+   Use `try` to propagate errors. Use `catch` to recover or translate errors at an
+   applicable boundary.
+
+   Use assertions or `unreachable` for proven programmer invariants.
+   Do not use them for ordinary device loss, malformed input or capacity exhaustion.
+   Callback-owned resources still need explicit teardown after their last use.
+   Lexical cleanup does not permit early release of a busy Wayland buffer.
+
+5. **Pass resources explicitly.**
+   Modern standard-library APIs distinguish caller buffers from allocating variants.
+   They pass allocators and I/O explicitly.
+
+   Our runtime uses static backing, not an allocator.
+   Build tools and tests have different constraints.
+   A call without an allocator argument can still allocate internally.
+
+6. **Use abstractions that simplify code.**
+   Plain structs, functions, comptime type factories and `anytype` are normal Zig.
+   Runtime vtables and `@fieldParentPtr` also support dynamic dispatch and intrusive ownership.
+
+   Do not replace every generic test adapter with an interface.
+   Do not replace every interface with generics.
+   Typed boundaries should reduce requirements at call sites.
+   They should not only wrap C functions or hide casts elsewhere.
+
+7. **Use comptime for static information.**
+   Capacity-specialized types, checked layout arithmetic and compile-time validation
+   are suitable for this project.
+   Unless specialization or comptime iteration is necessary, prefer ordinary loops and functions.
+   Do not add a reflection framework for a small fixed problem.
+
+8. **Use tests of observable contracts.**
+   Standard-library tests use `std.testing` for success, boundary and error cases.
+   Keep our public behavioral test interface.
+   Do not reorganize tests around private helpers only to copy the standard library's file layout.
+   See the [verification policy](../CONTRIBUTING.md#verification).
 
 ### Good source-reading starting points
 
-All paths below are relative to `lib/std` in the Zig store output printed by the shell.
+The shell prints the Zig store path.
+All paths below are relative to `lib/std` in that store output.
 Read the implementation and tests, not only the declaration name.
 
 | Source | What to study |
 | --- | --- |
 | `Io/Writer.zig`: `fixed`, `VTable`, `buffered` | Caller-owned buffers, typed interface contracts, explicit capacity failure |
-| `mem.zig`: `print`, `printSentinel` | Small nonallocating convenience built over a fixed writer; error translation |
+| `mem.zig`: `print`, `printSentinel` | Fixed-writer formatting without allocation, error translation |
 | `array_list.zig`: `initBuffer`, `appendBounded`, `appendSliceBounded` | Borrowed backing, capacity checks, documented pointer stability |
-| `bit_set.zig`: `Static` | Small comptime type factory, inline storage, no allocator/deinit |
+| `bit_set.zig`: `Static` | Small comptime type factory, inline storage, no allocator or deinit |
 | `DoublyLinkedList.zig`: `Node`, `popFirst` | Optional captures, intrusive ownership, documented preconditions |
-| `Io.zig`, `Io/Reader.zig` | Explicit effects, precise vtable/lifetime/error contracts |
-| `process.zig`: `Init`; `start.zig`: `callMain`; `Io/Threaded.zig` | Why friendly startup/concurrency APIs need an allocation audit |
+| `Io.zig`, `Io/Reader.zig` | Explicit effects and vtable, lifetime and error contracts |
+| `process.zig`: `Init`; `start.zig`: `callMain`; `Io/Threaded.zig` | Allocation risks in startup and concurrency APIs |
 | `Build.zig`, `Build/Step/Run.zig` | Version-matching declarative build graph and tool execution APIs |
 
-The library is an exemplar, not a uniformly modern template: it still contains
-deprecated aliases and some internal uses of them. Nor is a linked list
-necessarily better than our small fixed slot tables just because std provides it.
+The library is a useful example, not a template with only current APIs.
+It still contains deprecated aliases and some internal uses of them.
+A standard-library linked list is not necessarily better than our small fixed slot tables.
 
 ## Important 0.17 details
 
-- **I/O:** modern `std.Io` is an explicit interface for effects, including files,
-  clocks and concurrency, not merely renamed byte streams. Readers/writers use
-  concrete interfaces with caller-provided buffers. Learn this model rather
-  than copying older `std.io`, `GenericWriter` or `fixedBufferStream` examples;
-  choosing an execution backend is a separate allocation/lifecycle decision.
-- **C import:** `@cImport` is removed. The 0.17 release notes also deprecate
-  `std.Build.Step.TranslateC` in favor of the official external `translate-c`
-  package. The bundled `zig translate-c` CLI still exists and is what this
-  project currently uses. Evaluate any generator migration with Nix pinning,
-  target/header consistency and real ABI coverage; no dependency change is
-  selected by this research.
-- **Formatting:** `std.fmt.bufPrint` is deprecated in favor of `std.mem.print`;
-  allocating printing moved to `Allocator.print`. For a borrowed destination,
-  use `std.Io.Writer.fixed` or `std.mem.print`, not allocating formatting.
-  Failed formatting may already have written a prefix: do not publish it as a
-  successful transcript.
-- **Containers:** `std.ArrayList(T)` normally takes an allocator on allocating
-  operations. Its `initBuffer`/bounded operations instead use caller-owned
-  storage, with `error.OutOfMemory` meaning insufficient capacity. On a list
-  initialized with `initBuffer`, **all allocator-taking methods are forbidden**,
-  including `deinit(gpa)`. This is not a fixed-buffer allocator or arena.
-- **Cleanup:** ordinary `errdefer` remains; `errdefer |err|` capture was removed.
-  Inspect an error through `catch` at the appropriate boundary instead.
-- **Other migration traps:** use `@splat` instead of array multiplication;
-  `@backingInt`/`@fromBackingInt` supersede enum integer casts; list `last()`
-  returns an optional; reflection uses the new field-name/type arrays.
-  These are version facts, not instructions to rewrite working code blindly.
+- **I/O:** `std.Io` is an explicit interface for effects, including files, clocks
+  and concurrency. It is not only a new name for byte streams.
+  Readers and writers use concrete interfaces with caller-provided buffers.
+  Learn this model instead of copying older `std.io`, `GenericWriter` or
+  `fixedBufferStream` examples.
+  An execution backend needs a separate allocation and lifecycle decision.
+- **C import:** Zig 0.17 removed `@cImport`.
+  Its release notes also deprecate `std.Build.Step.TranslateC` in favor of the
+  official external `translate-c` package.
+  This project still uses the bundled `zig translate-c` CLI.
+  Before a generator migration, evaluate Nix pinning, target/header consistency and real ABI coverage.
+  This research does not select a dependency change.
+- **Formatting:** Zig deprecated `std.fmt.bufPrint` in favor of `std.mem.print`.
+  Allocating printing moved to `Allocator.print`.
+  For a borrowed destination, use `std.Io.Writer.fixed` or `std.mem.print`.
+  Do not use allocating formatting for that destination.
+  Failed formatting can leave a prefix in the buffer.
+  Do not publish that prefix as a successful transcript.
+- **Containers:** `std.ArrayList(T)` normally takes an allocator for allocating operations.
+  Its `initBuffer` and bounded operations instead use caller-owned storage.
+  For these operations, `error.OutOfMemory` means insufficient capacity.
+  If a list uses `initBuffer`, **do not call allocator-taking methods**, including `deinit(gpa)`.
+  This list is not a fixed-buffer allocator or arena.
+- **Cleanup:** ordinary `errdefer` remains.
+  Zig removed the `errdefer |err|` capture form.
+  Instead, examine errors through `catch` at the applicable boundary.
+- **Other migration changes:** `@splat` replaces array multiplication.
+  `@backingInt` and `@fromBackingInt` replace enum integer casts.
+  List `last()` returns an optional.
+  Reflection uses the new field-name and field-type arrays.
+  These are version facts, not instructions to rewrite working code without a reason.
 
 ### The crucial constraint for this application
 
 The [static-storage ADR](adr/0002-fixed-application-storage.md) is stricter than
-ordinary Zig practice. In pinned `start.zig`, the full `std.process.Init` path
-sets up allocators, `Io.Threaded` and an allocated environment map. The
-`Init.Minimal` branch avoids that full setup, but any entry-point change still
-requires auditing its reachable paths. `Io.Threaded` also allocates for tasks and
-can create worker threads. Those are not exemptions for application workspaces.
+ordinary Zig practice.
+In pinned `start.zig`, the full `std.process.Init` path creates allocators,
+`Io.Threaded` and an allocated environment map.
+The `Init.Minimal` branch avoids that full setup.
+Each entry-point change still requires an audit of reachable paths.
+`Io.Threaded` also allocates for tasks and can create worker threads.
+The storage rule still applies to application workspaces that use these mechanisms.
 
-Therefore **do not adopt full `std.process.Init`, an arena, a fixed-buffer
-allocator or a scheduler simply to look more idiomatic**. A reviewed low-level
-OS integration can be the appropriate choice; the 0.16 notes explicitly describe
-both higher-level `std.Io` and lower-level `std.posix.system` migration paths.
-Pure fixed readers/writers do not themselves require an `Io.Threaded` scheduler.
+**Do not adopt full `std.process.Init`, an arena, a fixed-buffer allocator or a
+scheduler for style alone.**
+A reviewed low-level OS integration can be the applicable choice.
+The 0.16 notes describe both higher-level `std.Io` and lower-level
+`std.posix.system` migration paths.
+Fixed readers and writers do not themselves require an `Io.Threaded` scheduler.
 
-Borrowed-buffer containers are candidates only when they simplify real code.
-Their backing and bookkeeping must remain in the comptime layout (or documented
-bounded stack), and the backing must not move while borrowed. In particular,
-constructing a self-referential aggregate and then copying it is unsafe even if
-no heap allocation occurs. Keep explicit session-capacity errors and test reuse,
-exhaustion and outstanding readers/inference, not just nominal append behavior.
+Use borrowed-buffer containers only when they simplify the code.
+Their backing and records must remain in the comptime layout or documented
+bounded stack. The backing must not move while borrowed.
+A copy of a self-referential aggregate is unsafe even without heap allocation.
+
+Keep explicit session-capacity errors.
+Do tests for reuse, exhaustion and outstanding readers or inference.
+Do not limit the tests to successful append operations.

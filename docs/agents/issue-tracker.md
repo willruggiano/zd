@@ -1,16 +1,16 @@
 # Local Markdown tracker
 
-Specs and tickets under `.scratch/` are ephemeral working material.
+Specs and tickets under `.scratch/` are temporary work files.
 Exclude `.scratch/` from version control.
 
-Context that needs to survive belongs in code, project documentation,
-or agent skills—not in ticket history.
+Keep lasting information in code, project documentation or agent skills.
+Do not keep it only in ticket history.
 
 ## Layout
 
 - Spec: `.scratch/<feature>/spec.md`
 - Tickets: `.scratch/<feature>/issues/<NN>-<slug>.md`
-- Number tickets from `01`, placing blockers before dependent tickets.
+- Number tickets from `01`. Put blockers before tickets that depend on them.
 - Write one file per ticket.
 
 ## Ticket fields
@@ -20,19 +20,18 @@ or agent skills—not in ticket history.
   A missing value means `open`.
 - `Blocked by:` lists ticket numbers/titles within the feature, or `None`.
 
-A ticket can start when every blocker has progress `done`.
+Start a ticket only when every blocker has progress `done`.
 
 ## Operations
 
 - Publish: create the spec or ticket at its designated path.
-- Fetch: read the referenced file. Clarify ambiguous ticket numbers.
+- Fetch: read the specified file. Ask for clarification if a ticket number is unclear.
 - Claim: set progress to `in-progress`.
-- Comment: append under `## Comments`, preserving discussion while
-  the work is active.
+- Comment: append under `## Comments`. Keep the discussion while the work is active.
 - Complete:
-  1. Verify acceptance criteria.
-  2. Capture any lasting requirements, decisions, or lessons in code,
-     project documentation, or agent skills.
-  3. Record verification evidence and set progress to `done`.
-- Clean up: remove the feature's scratch directory once its work is
-  complete and lasting context has been captured elsewhere.
+  1. Make sure that the work meets the acceptance criteria.
+  2. Record lasting requirements, decisions or lessons in code, project documentation or agent skills.
+  3. Record verification evidence.
+  4. Set progress to `done`.
+- Clean up: first complete the work. Record lasting information outside the scratch directory.
+  Then remove the feature's scratch directory.

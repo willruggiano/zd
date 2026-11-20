@@ -1,9 +1,37 @@
 # No dynamic allocation throughout the Zig runtime
 
-Use statically sized storage and bounded, fixed-size stack values throughout the production Zig program, including the daemon, toggle client, startup, and error paths. This is stronger than fixed transcript capacity, a bounded heap, or allocation only during initialization: no application allocators, startup heap preallocation, arenas, allocator-backed containers, or hidden allocating Zig convenience functions. Audio, inference scheduling, rendering state, IPC, configuration, logging, device/monitor bookkeeping, and clipboard handling all obey the same rule, with explicit capacity-exhaustion behavior rather than growing storage.
+Use statically sized storage and bounded, fixed-size stack values throughout the production Zig program.
+This rule includes the daemon, toggle client, startup and error paths.
+A fixed transcript capacity, bounded heap or initialization-only allocation is not sufficient.
+Do not use these application allocation mechanisms:
 
-Make storage-sizing inputs configurable through the package build and NixOS module. A Zig comptime calculation derives the layout and total from every application-owned storage requirement, including all workspaces, queues, slot tables, buffers, alignment/padding, and concurrent instances. This is not merely a configurable transcript buffer or a manually guessed arena size. Document bounded stack requirements separately, make the derived footprint inspectable, and reject invalid configurations before runtime. Changing capacities rebuilds the program; it does not introduce a runtime allocator, even over fixed backing memory.
+- Application allocators or startup heap preallocation.
+- Arenas or allocator-backed containers.
+- Zig convenience functions with hidden allocations.
 
-Allocations internal to whisper.cpp, GPU drivers, PipeWire, libwayland, and other actual external dependencies are explicitly outside the guarantee; do not patch or constrain them. Moving application storage behind C malloc or a custom C wrapper does not qualify as an external-dependency allocation.
+The rule applies to audio, inference scheduling, rendering state, IPC, configuration and logging.
+It also applies to device records, monitor records and clipboard handling.
+Define explicit failure behavior for capacity exhaustion. Do not increase storage at runtime.
 
-Wayland shared-memory backing is also an allowed integration-resource exception, even when Zig issues the OS calls. Prefer fixed-size, reused pools, but permit resource creation/recreation when it keeps the integration substantially simpler rather than requiring a startup-only mapping scheme. Document and manage that resource lifecycle separately. The surrounding Zig rendering state, monitor records, buffer bookkeeping, and queues remain static, and this exception cannot be used as a general application heap or transcript store.
+Make storage-sizing inputs configurable through the package build and NixOS module.
+A Zig comptime calculation must derive the layout and total from all application-owned storage requirements.
+Include all workspaces, queues, slot tables, buffers, alignment, padding and concurrent instances.
+A configurable transcript buffer or an estimated arena size alone is not sufficient.
+
+Document bounded stack requirements separately.
+Make the derived footprint available for inspection.
+Reject invalid configurations before runtime.
+Capacity changes rebuild the program. They must not introduce a runtime allocator, even over fixed backing memory.
+
+Allocations inside external dependencies are outside the guarantee.
+These dependencies include whisper.cpp, GPU drivers, PipeWire and libwayland.
+Do not patch or constrain their allocations.
+Application storage behind C malloc or a custom C wrapper is not an external-dependency allocation.
+
+Wayland shared-memory backing is a permitted integration-resource exception, even when Zig issues the OS calls.
+Prefer fixed-size pools that the application reuses.
+Resource creation or recreation is permitted when it makes integration much simpler than startup-only mappings.
+Document that resource lifecycle separately. Manage it separately from application storage.
+
+The surrounding Zig rendering state, monitor records, buffer records and queues must remain static.
+Do not use the Wayland exception as a general application heap or transcript store.
