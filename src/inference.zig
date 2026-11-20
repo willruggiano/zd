@@ -4,7 +4,8 @@ const sizes = @import("config.zig").sizes;
 
 pub const State = enum(u8) { loading, loaded, idle, decoding, complete, failed, load_failed };
 /// One resident context, one borrowed audio slice, one completion slot.
-/// Release/acquire transfers ownership in both directions. No job queue.
+/// Release/acquire transfers ownership in both directions. The session owns
+/// the bounded FIFO; this worker never queues or decodes concurrent jobs.
 pub const Worker = struct {
     thread: c.pthread_t = undefined,
     attr: c.pthread_attr_t = undefined,
@@ -16,6 +17,9 @@ pub const Worker = struct {
     samples: []const f32 = &.{},
     result: [sizes.transcript_bytes]u8 = undefined,
     result_len: usize = 0,
+    prompt: [sizes.context_bytes + 1]u8 = undefined,
+    prompt_len: usize = 0,
+    short_audio: [c.WHISPER_SAMPLE_RATE]f32 = undefined,
     problem: anyerror = error.InferenceFailure,
     params: c.whisper_full_params = undefined,
     stack: [sizes.worker_stack_bytes]u8 align(65536) = undefined,
@@ -35,13 +39,22 @@ pub const Worker = struct {
     pub fn release(self: *Worker) void {
         @memset(self.result[0..self.result_len], 0);
         self.result_len = 0;
+        self.clearPrompt();
         @atomicStore(State, &self.state, .idle, .release);
     }
-    pub fn decode(self: *Worker, samples: []const f32) bool {
-        if (self.status() != .idle) return false;
+    pub fn decode(self: *Worker, samples: []const f32, context: []const u8) bool {
+        if (self.status() != .idle or context.len > sizes.context_bytes) return false;
+        @memcpy(self.prompt[0..context.len], context);
+        self.prompt[context.len] = 0;
+        self.prompt_len = context.len;
+        self.params.initial_prompt = if (context.len == 0) null else &self.prompt;
         self.samples = samples;
         @atomicStore(State, &self.state, .decoding, .release);
         return true;
+    }
+    fn clearPrompt(self: *Worker) void {
+        @memset(self.prompt[0 .. self.prompt_len + 1], 0);
+        self.prompt_len = 0;
     }
     pub fn deinit(self: *Worker) void {
         if (!self.started) return;
@@ -50,6 +63,7 @@ pub const Worker = struct {
         @memset(self.result[0..self.result_len], 0);
         self.result_len = 0;
         self.samples = &.{};
+        self.clearPrompt();
         self.started = false;
     }
     fn run(data: ?*anyopaque) callconv(.c) ?*anyopaque {
@@ -102,7 +116,16 @@ pub const Worker = struct {
                 };
                 decoder_live = true;
             }
-            const succeeded = c.whisper_full_with_state(context, decoder, self.params, self.samples.ptr, @intCast(self.samples.len)) == 0;
+            // whisper.cpp skips inputs shorter than 100 ms. Give short tails
+            // one second including silence, without copying full-size windows.
+            const padded = self.samples.len < self.short_audio.len;
+            if (padded) {
+                @memcpy(self.short_audio[0..self.samples.len], self.samples);
+                @memset(self.short_audio[self.samples.len..], 0);
+            }
+            const pcm = if (padded) &self.short_audio else self.samples;
+            const succeeded = c.whisper_full_with_state(context, decoder, self.params, pcm.ptr, @intCast(pcm.len)) == 0;
+            if (padded) @memset(&self.short_audio, 0);
             self.samples = &.{};
             self.problem = error.InferenceFailure;
             var valid = succeeded;

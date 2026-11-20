@@ -1,7 +1,7 @@
 # Explicit fixture mode
 
-The first milestone's simulated path is retained for debugging. Real short-reply
-capture and inference are now available; see [the runtime guide](runtime.md) for
+The first milestone's simulated path is retained for debugging. Real streaming
+capture and inference are available; see [the runtime guide](runtime.md) for
 current architecture, configuration, storage accounting, checks and limitations.
 
 ```sh

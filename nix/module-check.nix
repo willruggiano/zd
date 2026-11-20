@@ -30,6 +30,10 @@ let
     { sizing.clipboardSlots = 1; }
     { sizing.transfers = 0; }
     { sizing.audioSamples = 9223372036854775807; }
+    { sizing.audioWindows = 1; }
+    { sizing.windowMinSamples = 0; }
+    { sizing.pauseSamples = 0; }
+    { sizing.contextBytes = 4097; }
     { sizing.deviceSlots = 257; }
     { sizing.workerStackBytes = 2097153; }
     { sizing.inferenceThreads = 0; }
@@ -72,16 +76,18 @@ pkgs.runCommand "dictation-module-config" { nativeBuildInputs = [ pkgs.python3 ]
       return {k: int(v) for k, v in (line.split('=') for line in (Path(sys.argv[1]) / name).read_text().splitlines())}
   default, configured = read('default'), read('configured')
   expected = dict(transcript_bytes=4096, control_clients=4, clipboard_slots=2,
-                  transfers=2, audio_samples=640000, device_slots=4,
+                  transfers=2, audio_samples=640000, audio_windows=4,
+                  window_min_samples=64000, pause_samples=16000, context_bytes=128, device_slots=4,
                   worker_stack_bytes=2097152, inference_threads=2)
   assert all(configured[k] == v for k, v in expected.items())
   expected_default = dict(transcript_bytes=1048576, control_clients=8, clipboard_slots=3,
-                          transfers=8, audio_samples=480000, device_slots=32,
+                          transfers=8, audio_samples=480000, audio_windows=3,
+                          window_min_samples=48000, pause_samples=8000, context_bytes=256, device_slots=32,
                           worker_stack_bytes=8388608, inference_threads=4)
   assert all(default[k] == v for k, v in expected_default.items())
   assert configured['static_bytes'] != default['static_bytes']
   assert configured['static_bytes'] % configured['alignment'] == 0
-  assert configured['session_bytes'] > 640000 * 4
+  assert configured['session_bytes'] > 640000 * 4 * 4
   assert configured['worker_bytes'] > 2097152
   assert configured['wayland_backing_bytes'] == 51200
   PYTHON
