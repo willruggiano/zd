@@ -1,6 +1,8 @@
 const std = @import("std");
 pub const Indicator = enum { loading, idle, recording, finalizing, success, no_speech, failure };
 pub const Capabilities = struct { layer_shell: bool, data_control: bool };
+/// Never reused within a daemon lifetime. Both counters fail closed on exhaustion.
+pub const Operation = struct { session: u64, window: u64 };
 pub const Windows = struct {
     samples: usize,
     slots: usize = 3,
@@ -19,7 +21,7 @@ pub const Windows = struct {
 };
 
 /// Single-threaded public seam. publish copies; decode borrows immutable PCM
-/// until complete/inferenceFailed. Call advance after releasing the decoder's
+/// until a matching complete/inferenceFailed (not merely a cancel request). Call advance after releasing the decoder's
 /// result slot, so the next queued window can be submitted. No other effect may
 /// retain its arguments. Capture errors may arrive while PCM is still borrowed.
 pub fn Session(comptime capacity: usize, comptime audio_config: Windows) type {
@@ -50,7 +52,9 @@ pub fn Session(comptime capacity: usize, comptime audio_config: Windows) type {
         read_index: usize = 0,
         write_index: usize = 0,
         queued: usize = 0, // Sealed windows, including the decoder's borrow.
-        in_flight: bool = false,
+        generation: u64 = 0,
+        window_number: u64 = 0,
+        in_flight: ?Operation = null,
 
         pub fn connect(self: *Self, capabilities: Capabilities) !void {
             if (!capabilities.layer_shell) return error.MissingLayerShell;
@@ -75,9 +79,6 @@ pub fn Session(comptime capacity: usize, comptime audio_config: Windows) type {
                 effects.show(if (self.model == .loading) .loading else .failure);
                 return;
             }
-            // Asynchronous restart belongs to 05. Failure is visible immediately,
-            // but a new session cannot reuse the outstanding decoder's slot.
-            if (self.phase == .finalizing) return;
             if (self.phase == .recording) {
                 _ = effects.recording(null);
                 self.source = null;
@@ -86,7 +87,15 @@ pub fn Session(comptime capacity: usize, comptime audio_config: Windows) type {
                 if (self.queued < audio_config.slots and self.windows[self.write_index].len != 0) self.seal();
                 self.advance(effects);
             } else {
-                if (self.in_flight) return;
+                if (self.phase == .finalizing) {
+                    self.discard(effects);
+                } else if (self.in_flight != null) return;
+                self.generation = std.math.add(u64, self.generation, 1) catch {
+                    effects.problem(error.SessionIdentityCapacity);
+                    self.fail(effects);
+                    return;
+                };
+                self.window_number = 0;
                 const source = effects.defaultSource() orelse {
                     effects.problem(error.DefaultMicrophoneUnavailable);
                     self.fail(effects);
@@ -139,18 +148,24 @@ pub fn Session(comptime capacity: usize, comptime audio_config: Windows) type {
             self.queued -= 1;
         }
         pub fn advance(self: *Self, effects: anytype) void {
-            if (self.in_flight or (self.phase != .recording and self.phase != .finalizing)) return;
+            if (self.in_flight != null or (self.phase != .recording and self.phase != .finalizing)) return;
             while (self.queued != 0) {
                 const window = &self.windows[self.read_index];
                 if (window.energy / @as(f64, @floatFromInt(window.len)) < 0.000001) {
                     self.retire();
                     continue;
                 }
-                if (!effects.decode(window.samples[0..window.len], self.context())) {
+                self.window_number = std.math.add(u64, self.window_number, 1) catch {
+                    effects.problem(error.InferenceIdentityCapacity);
+                    self.fail(effects);
+                    return;
+                };
+                const operation: Operation = .{ .session = self.generation, .window = self.window_number };
+                if (!effects.decode(operation, window.samples[0..window.len], self.context())) {
                     self.fail(effects);
                     return;
                 }
-                self.in_flight = true;
+                self.in_flight = operation;
                 return;
             }
             self.finish(effects);
@@ -178,32 +193,43 @@ pub fn Session(comptime capacity: usize, comptime audio_config: Windows) type {
         pub fn shutdown(self: *Self) void {
             for (&self.windows) |*window| window.clear();
             self.clearTranscript();
-            self.in_flight = false;
+            self.in_flight = null;
             self.queued = 0;
+        }
+        // Retain only the borrowed head. All other slots immediately belong to
+        // replacement capture; queued includes that head until its owner returns.
+        fn discard(self: *Self, effects: anytype) void {
+            if (self.in_flight) |operation| {
+                if (operation.session == self.generation) effects.cancel(operation);
+            }
+            self.clearTranscript();
+            for (&self.windows, 0..) |*window, i| {
+                if (self.in_flight == null or i != self.read_index) window.clear();
+            }
+            self.queued = if (self.in_flight != null) 1 else 0;
+            self.write_index = (self.read_index + self.queued) % audio_config.slots;
         }
         pub fn fail(self: *Self, effects: anytype) void {
             _ = effects.recording(null);
             self.source = null;
-            self.clearTranscript();
-            for (&self.windows, 0..) |*window, i| {
-                if (!self.in_flight or i != self.read_index) window.clear();
-            }
-            self.queued = if (self.in_flight) 1 else 0;
-            self.write_index = (self.read_index + self.queued) % audio_config.slots;
+            self.discard(effects);
             self.phase = .failure;
             effects.show(.failure);
         }
-        pub fn inferenceFailed(self: *Self, effects: anytype) void {
-            if (!self.in_flight) return;
-            self.in_flight = false;
+        fn returned(self: *Self, operation: Operation) bool {
+            const flight = self.in_flight orelse return false;
+            if (!std.meta.eql(operation, flight)) return false;
+            self.in_flight = null;
             self.retire();
+            return operation.session == self.generation and (self.phase == .recording or self.phase == .finalizing);
+        }
+        pub fn inferenceFailed(self: *Self, operation: Operation, reason: anyerror, effects: anytype) void {
+            if (!self.returned(operation)) return;
+            effects.problem(reason);
             self.fail(effects);
         }
-        pub fn complete(self: *Self, result: []const u8, effects: anytype) void {
-            if (!self.in_flight) return;
-            self.in_flight = false;
-            self.retire();
-            if (self.phase != .recording and self.phase != .finalizing) return;
+        pub fn complete(self: *Self, operation: Operation, result: []const u8, effects: anytype) void {
+            if (!self.returned(operation)) return;
             const trimmed = std.mem.trim(u8, result, " \r\n\t");
             if (trimmed.len != 0) {
                 const separator: usize = if (self.transcript_len == 0) 0 else 1;

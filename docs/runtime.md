@@ -3,8 +3,8 @@
 Native PipeWire capture feeds bounded windows to a resident whisper.cpp model
 while recording continues. Audio storage is recycled; the clipboard changes only
 after stop and successful finalization. [NixOS graphical-session installation](installation.md)
-is available. Asynchronous restart and reactive multi-monitor feedback remain
-later milestones. CPU integration tests do not establish target-GPU throughput
+is available. Restart during finalization starts replacement capture while old
+inference unwinds. Reactive multi-monitor feedback remains a later milestone. CPU integration tests do not establish target-GPU throughput
 or recognition quality.
 
 ## Run
@@ -57,9 +57,11 @@ thread, so clipboard serving and toggles remain responsive.
 - Forced cuts in continuous speech can affect word recognition and punctuation.
   Bounded text context helps continuity but is not a full-session decoder or a
   guarantee of correct boundary words; see the streaming algorithm below.
-- A toggle during finalization currently refuses replacement recording. It does
-  not queue another session or reuse borrowed samples. Safe asynchronous restart
-  belongs to milestone 05. This applies to fixture mode too.
+- Cancellation is cooperative, not GPU preemption. Replacement capture starts
+  without waiting, but its bounded backlog can fill while the old decoder unwinds.
+  Such exhaustion fails visibly and never revives the superseded transcript.
+  After an ordinary failure, retry still waits for any outstanding borrow to
+  return; broader recovery is milestone 07.
 - No multi-monitor/reactive bars yet (08).
   No lock/suspend integration: locking does not cancel recording. Shutdown closes
   capture first and requests decoder abort, but waits for outstanding native work
@@ -188,13 +190,54 @@ closed and inference joined.
 - Slots are cleared/recycled only after the decoder relinquishes them. Capture
   errors or capacity failures discard unborrowed audio and accumulated text
   immediately, but preserve the outstanding immutable borrow until its late
-  completion/failure, which cannot publish or schedule discarded work. Until
-  milestone 05, replacement capture waits for this unwind rather than reusing PCM.
+  completion/failure, which cannot publish or schedule discarded work. Restart
+  follows the same retention rule but uses the other slots for new capture.
 - Text prompting is not acoustic overlap: a forced boundary may split a word,
   the recognizer may repeat/omit speech or hallucinate, and punctuation can vary.
   Pause-aligned and continuous joins are exercised deterministically; real
   boundary quality and sustained throughput remain target-desktop acceptance in
   09. There is no later whole-session second pass after old audio is recycled.
+
+### Restart and operation ownership
+
+A toggle **while recording** stops capture, even during background inference.
+The next toggle **during finalization** supersedes that session and starts a new
+recording on the current default microphone. Accumulated old text and unborrowed
+queued audio are cleared immediately; the previous clipboard is untouched. This
+is replacement, not a queue of user sessions or a separate cancel command.
+
+- The ring retains at most **one** old inference borrow at its head. Its samples
+  remain immutable until the native call actually returns. All other slots are
+  immediately reusable by replacement capture. Repeated restarts discard that
+  replacement's backlog rather than retaining another generation of queued work.
+- The existing `audioWindows >= 2` constraint gives at least one replacement
+  window alongside the retained borrow. Defaults give two replacement windows;
+  all three slots are usable by the current session when no old borrow remains.
+  No second full-session bank, new sizing input or hidden reserve is introduced.
+  Capacity failures still reject the session rather than silently dropping speech.
+- Each decoder operation carries a **session generation and window number**,
+  two `u64` values. They are never reused within a daemon lifetime: checked
+  increments fail closed on identity exhaustion rather than wrapping. Only a
+  matching terminal event retires the current borrow. A matching obsolete event
+  retires its own audio but cannot append text, report an error or change the
+  current capture/indicator. Duplicate or out-of-order identities retire nothing.
+- `decode(operation, pcm, context)` borrows PCM and copies call-scoped context.
+  `cancel(operation)` requests cancellation; it does **not** release that borrow.
+  Adapters deliver `complete(operation, text)` or
+  `inferenceFailed(operation, reason)` only after relinquishing PCM. The daemon
+  releases the worker's result slot before `advance` or further capture/control
+  events can schedule another job. There are no incremental text callbacks.
+- One worker and one native context remain serialized. Cancellation sets an atomic
+  per-operation flag, read alongside shutdown by whisper's abort callback. A new
+  job resets it only after the old operation has returned and its result slot is
+  released. A race can still yield an old successful/partial result; session
+  eligibility, not the native return code, is authoritative. No replacement call
+  overwrites an old prompt, result buffer, padding buffer or PCM borrow.
+- Old prompt/result bytes survive only their outstanding use and are cleared on
+  release; current transcript storage is reused immediately. Model initialization
+  and decoder-state initialization do not offer immediate cancellation. Pinned
+  whisper.cpp checks abort at computation boundaries, not guaranteed instantaneous
+  GPU preemption. Target-desktop restart latency remains milestone 09.
 
 The control socket is abstract Unix `SOCK_SEQPACKET`, named `dictation-<uid>`.
 One instance per UID/network namespace, same-UID peers only; multiple graphical
@@ -202,7 +245,7 @@ sessions for one UID are not separated yet. Commands are exactly `toggle`, with
 16-byte request scratch, one-second idle-peer deadlines and a 1.5-second client
 response deadline. Saturation best-effort replies `busy` or disconnects; it never
 reports copy success. A successful client reply means **toggle accepted**, not
-successful publication (including loading/finalization refusal).
+successful publication (including a loading refusal or a restart).
 
 Clipboard source bytes stay immutable while source-owned or reader-pinned.
 A source cancellation plus no remaining readers permits clearing/reuse. New work
@@ -218,11 +261,18 @@ without a known failure, not proof that another application pasted.
 `@sizeOf(Storage)` includes alignment/padding and every simultaneously live copy:
 session window slots/FIFO metadata and accumulated transcript, clipboard slots/readers/transfers, control client and
 server scratch, poll state, diagnostics, device records/names, metadata and SPA
-parameter scratch, inference configuration, job/result slot, bounded prompt and short-tail padding, pthread attributes
+parameter scratch, inference configuration, job/result slot, session/window identities,
+atomic cancellation flag, fixture completion identity/deadline, bounded prompt and
+short-tail padding, pthread attributes
 and an explicitly supplied worker stack. Read-only literals/protocol tables and
 executable code are not mutable workspaces.
 
 Run the **built binary** with `footprint` to inspect the total and components.
+`retained_inference_windows=1`, `replacement_audio_windows=audioWindows-1` and
+`operation_bytes=16` expose restart headroom and identity size. The typed aggregate
+counts all instances: session counters and optional in-flight identity, the
+worker's single completion identity/flag and the fixture event identity, even
+when fixture mode is unused. No additional event queue or worker is created.
 The worker stack is already included in `static_bytes`; do not add it twice.
 Main-thread application stack is separately budgeted conservatively at **16 KiB**,
 not compiler-certified: fixed integer formatting (65 bytes plus a 32-byte writer),
@@ -235,7 +285,7 @@ native inference call frames. Native libraries' own threads/stacks remain extern
 | --- | --- | --- |
 | `transcriptBytes` | bytes, 1,048,576 | 1–67,108,864; session + worker + each clipboard slot |
 | `audioSamples` | mono F32 samples/window, 480,000 | 1–9,600,000; four bytes each, multiplied by `audioWindows` |
-| `audioWindows` | slots, 3 | 2–16; includes borrowed, queued and filling windows |
+| `audioWindows` | slots, 3 | 2–16; one possibly obsolete borrow plus current queued/filling windows |
 | `windowMinSamples` | samples, 48,000 | 1–`audioSamples`; stop may seal a shorter tail |
 | `pauseSamples` | quiet samples, 8,000 | 1–`windowMinSamples` |
 | `contextBytes` | prompt bytes, 256 | 0–4096; worker also owns one NUL byte |
@@ -251,15 +301,15 @@ rebuild the executable; no runtime allocator or fixed arena is involved. The
 [NixOS module](installation.md) routes these same package arguments; future
 storage additions must retain this shared contract.
 
-Audit scope includes startup, errors, capture teardown, worker setup, completion,
-shutdown, formatting and forwarded logging:
+Audit scope includes startup, errors, capture teardown, worker setup, cancellation,
+queue retirement, stale completion, shutdown, formatting and forwarded logging:
 
 - Streaming uses array slots, bounded index/length arithmetic, scalar energy and
   quiet counters, slices and fixed copies. No new application allocator or
   unbounded stack scratch is used. Prompt tokenization allocates inside the genuine
   whisper library; our prompt and short-tail buffers remain in `Storage`.
 - libc `main` borrows argv. `std.mem` slices/copies/trim/print, integer `parseInt`,
-  math and atomics do not allocate on the used paths. `std.mem.print` uses the
+  checked math, scalar-struct `std.meta.eql` and atomics do not allocate on the used paths. `std.mem.print` uses the
   fixed writer, not an allocating writer. No `std.Thread.spawn` is used.
 - The pthread receives the statically declared, 65,536-aligned stack through
   `pthread_attr_setstack`. libc's thread/TLS metadata is external runtime storage,
@@ -300,6 +350,7 @@ nixfmt --check flake.nix nix/*.nix
 nix build .#cpu.passthru.tests.native-smoke --no-link -L
 nix build .#cpu.passthru.tests.capture-inference --no-link -L
 nix build .#cpu.passthru.tests.streaming --no-link -L
+nix build .#cpu.passthru.tests.restart --no-link -L  # explicit test-only decoder substitution
 nix build .#cpu.passthru.tests.sizing --no-link -L
 nix build .#cpu.passthru.tests.model-failure --no-link -L
 nix build .#cpu.passthru.tests.backend-required --no-link -L
@@ -341,7 +392,15 @@ native consumer with ten-second windows, eight audio slots and bounded prompt
 context. It waits for actual CPU completion while capture remains open, verifies
 that the clipboard is unchanged, then drains multiple windows after stop. Its
 recognition assertions are regression checks, not a comprehensive boundary-quality
-assessment. `sizing` compares actual default and
+assessment. `restart` uses the same installed windowed CPU package and real
+PipeWire/Wayland, but **explicitly interposes decoding** via test-only
+`LD_PRELOAD`. It holds the old native call after observing the real abort callback;
+replacement PCM is captured before a test-owned gate lets that call return. It
+checks retained PCM, fresh default-source selection, cancellation-flag reset,
+serialized replacement decoding and one final publication. Model loading/state
+allocation remain real, but this establishes neither recognition nor real
+whisper/GPU cancellation latency. The interposer/gate are absent from production
+packages and module settings. `sizing` compares actual default and
 small installed binaries. `model-failure` verifies an intentionally missing model
 with real native startup: no capture, no fixture fallback, no clipboard replacement.
 `backend-required` deliberately pairs the real CPU-only library with a daemon
@@ -444,3 +503,66 @@ can absorb new fields into existing alignment padding; do not sum rounded
 component totals as a substitute for the whole `Storage` measurement. Wayland
 pixel backing remains separately 51,200 bytes. Physical microphone, NVIDIA,
 boundary quality/latency and target-desktop acceptance remain milestone 09.
+
+### Recorded milestone-05 verification
+
+Executed on **aarch64-linux** with **Zig 0.17.1**:
+
+- The initial restart test failed against `4c9b411a`: capture was still closed
+  after toggling during finalization. The same public seam now passes **23
+  standard tests**, including replacement capture before old completion, immutable
+  borrowed PCM, 20 restarts with pending chunks, out-of-order/duplicate successes
+  and failures, clearing old prompt context, default/non-default capacities,
+  delayed-cancellation backlog exhaustion and replacement dependency failures.
+  No timers, GPU, model loading, audio server or desktop are used by these tests.
+- Direct tests, `zig build test`, ReleaseSafe development compilation, Zig/Nix
+  formatting, and installed default CUDA/CPU package builds passed. Native package
+  `checkPhase` still runs only the standard Zig suite. No compiler pin changed.
+- Separate `module-config`, `sizing`, `native-smoke`, `capture-inference`,
+  `streaming`, `model-failure`, `backend-required` and **`restart`** consumers passed.
+  Real CPU recognition and multi-window streaming were executed independently of
+  the restart adapter. The restart consumer actually observed the abort callback,
+  held the old operation through replacement capture, verified its retained PCM,
+  then decoded two replacement windows and published only their joined result.
+  It uses the explicitly substituted decoder described above, not real GPU work.
+- The installed-session **TCG VM actually passed**, about **610 seconds**, with
+  its explicitly adapted decoder and real model loading, capture, Wayland and
+  service lifecycle. KVM and physical target-desktop/NVIDIA tests were not run.
+  The final aggregate reused these successfully executed consumer outputs; it
+  did not represent cache reuse as additional executions.
+- Allocation/lifetime review covered cancellation, matching/stale completions,
+  repeated queue retirement, replacement failures and shutdown. The new checked
+  arithmetic, two-scalar `std.meta.eql`, identity copies and atomics do not
+  allocate. No application allocator import/symbol was found; native-library
+  internals remain exempt. Thread creation still supplies the fixed worker stack.
+  The separately budgeted main-thread stack remains 16 KiB, not compiler-certified.
+
+Measured installed layouts (bytes, alignment 65,536):
+
+| Component | Default CPU sizing | Installation example sizing |
+| --- | ---: | ---: |
+| Whole `Storage` | 19,529,728 | 12,517,376 |
+| Session, including identities and retained borrow | 6,808,744 | 10,244,288 |
+| Worker, including cancellation identity/flag and stack | 9,502,720 | 2,228,224 |
+| Replacement windows while one old borrow remains | 2 | 3 |
+
+New bookkeeping consumes previously counted alignment padding, leaving these
+whole-program totals unchanged; it is not omitted from the layout. The small
+installed sizing consumer also verifies exactly one replacement window alongside
+one retained borrow. Existing minimum-two-slot and overflow checks remain active.
+Wayland pixel backing stays separately 51,200 bytes.
+
+#### Standards self-review
+
+Reviewed against **`4c9b411a`**, the contribution/storage/testing policies and code
+smell baseline. No blocking findings remain. Production C adapters and dependency
+pins are unchanged; the existing **test-only** C interposer was extended, not
+shipped or used to hide application storage. Cleanup remains deferred to 10.
+
+#### Spec self-review
+
+Ticket 05's restart, cancellation, ownership, bounded capacity, stale-event and
+privacy requirements are implemented and exercised through the public seam.
+No blocking findings remain. Real GPU preemption timing, physical-desktop restart
+latency and broader failure recovery are not claimed: they remain 09 and 07.
+Both reviews were local self-reviews; no independent sub-agent tool was available.

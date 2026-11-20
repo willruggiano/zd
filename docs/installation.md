@@ -16,8 +16,9 @@ modules = [
 Rebuild/switch the system normally. The module installs `dictation` in the system
 profile and a **systemd user service**, not a root microphone daemon. Bind
 `dictation toggle` in your existing shortcut launcher. One press records; the
-next closes capture, finalizes and copies. Paste manually. The current streaming
-limitations still apply; see [runtime behavior](runtime.md).
+next closes capture, finalizes and copies. Another press during finalization
+discards that session and starts a fresh recording without waiting for old inference.
+Paste manually. The current streaming limitations still apply; see [runtime behavior](runtime.md).
 
 ## Desktop and driver prerequisites
 
@@ -155,6 +156,8 @@ Defaults, units, limits, multiplicities and allocation exceptions are in the
 particular, each transcript needs session/worker/clipboard copies, while device,
 control and reader tables have their own capacities. `audioSamples` now sizes
 **each recycled window**, multiplied by `audioWindows`, not the whole session.
+At least two slots are required: one may remain borrowed by superseded inference
+while the others accept replacement capture. No second whole-session bank is used.
 `pauseSamples <= windowMinSamples <= audioSamples` must hold; invalid combinations
 fail Zig compilation before deployment. Backlog exhaustion remains an explicit
 failure, not a recording timer or a promise of unlimited transcript storage.
@@ -168,7 +171,8 @@ Inspect the **installed executable**, not just Nix option values:
 For the verified aarch64 build, defaults occupy **19,529,728 bytes** and the
 configuration above **12,517,376 bytes**, aligned to 65,536. Use the current binary's
 output for other settings: streaming adds multiple audio windows, a bounded prompt
-and short-tail padding, so milestone-03 measurements no longer apply. Totals
+and short-tail padding, so milestone-03 measurements no longer apply. Restart
+identities/cancellation bookkeeping are included in the typed total as well. Totals
 include alignment/padding and the worker stack. The conservative main-thread stack
 budget is separately **16 KiB**, not compiler-certified. Native library/driver allocations
 are excluded, as is the separately bounded **51,200-byte** Wayland pixel backing.

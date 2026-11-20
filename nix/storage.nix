@@ -17,7 +17,7 @@
     default = 3;
     min = 2;
     max = 16;
-    description = "Audio slots including the decoder borrow, queued windows and current capture window. Backlog exhaustion fails explicitly.";
+    description = "Audio slots including one possibly superseded decoder borrow, queued windows and current capture window. At least two permit replacement capture while cancellation unwinds; backlog exhaustion fails explicitly.";
   };
   windowMinSamples = {
     default = 48000;

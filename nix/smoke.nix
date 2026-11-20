@@ -1,6 +1,7 @@
 {
   lib,
   runCommand,
+  stdenv,
   sway-unwrapped,
   wl-clipboard,
   python3,
@@ -11,12 +12,25 @@
   whisper-cpp,
   withCaptureTest ? false,
   withStreamingTest ? false,
+  withRestartTest ? false,
   expectModelFailure ? false,
 }:
+let
+  restartAdapter =
+    runCommand "dictation-test-restart-inference" { nativeBuildInputs = [ stdenv.cc ]; }
+      ''
+        mkdir -p "$out/lib"
+        $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared -DDICTATION_TEST_RESTART \
+          -I${package.whisperLibrary}/include ${./test-inference.c} \
+          -o "$out/lib/libtest-inference.so"
+      '';
+in
 runCommand
   (
     if expectModelFailure then
       "dictation-model-failure"
+    else if withRestartTest then
+      "dictation-native-restart-adapted"
     else if withStreamingTest then
       "dictation-native-streaming"
     else if withCaptureTest then
@@ -93,7 +107,7 @@ runCommand
     if ${package}/bin/dictation toggle 2>missing.log; then exit 1; fi
     grep -q DaemonUnavailable missing.log
     printf 'Previous clipboard' | wl-copy
-    ${package}/bin/dictation daemon ${
+    ${lib.optionalString withRestartTest "LD_PRELOAD=${restartAdapter}/lib/libtest-inference.so"} ${package}/bin/dictation daemon ${
       lib.optionalString (!withCaptureTest) "--fixture"
     } >daemon.log 2>&1 &
     daemon=$!
@@ -107,6 +121,8 @@ runCommand
     ${
       if expectModelFailure then
         "python3 ${./model-failure.py} ${package}/bin/dictation"
+      else if withRestartTest then
+        "python3 ${./restart-smoke.py} ${package}/bin/dictation ${whisper-cpp.src}/samples/jfk.wav"
       else if withCaptureTest then
         "python3 ${./audio-smoke.py} ${package}/bin/dictation ${whisper-cpp.src}/samples/jfk.wav ${lib.optionalString withStreamingTest "--streaming"}"
       else
