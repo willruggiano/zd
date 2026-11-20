@@ -4,8 +4,10 @@ Native PipeWire capture feeds bounded windows to a resident whisper.cpp model
 while recording continues. Audio storage is recycled; the clipboard changes only
 after stop and successful finalization. [NixOS graphical-session installation](installation.md)
 is available. Restart during finalization starts replacement capture while old
-inference unwinds. Reactive multi-monitor feedback remains a later milestone. CPU integration tests do not establish target-GPU throughput
-or recognition quality.
+inference unwinds. Previous transcripts remain pasteable during new work,
+including bounded slow/concurrent readers and external selection takeover.
+Broader recovery and reactive multi-monitor feedback remain later milestones.
+CPU integration tests do not establish target-GPU throughput or recognition quality.
 
 ## Run
 
@@ -262,13 +264,50 @@ response deadline. Saturation best-effort replies `busy` or disconnects; it neve
 reports copy success. A successful client reply means **toggle accepted**, not
 successful publication (including a loading refusal or a restart).
 
-Clipboard source bytes stay immutable while source-owned or reader-pinned.
-A source cancellation plus no remaining readers permits clearing/reuse. New work
-does not clear the old selection. Transfers are nonblocking, progress in chunks
-up to 65,536 bytes, and expire after five seconds without write progress. Full
-source/transfer tables reject rather than allocate or block. Wayland has no
-publication acknowledgement: success means a valid selection request was queued
-without a known failure, not proof that another application pasted.
+### Clipboard ownership and concurrent readers
+
+The session's accumulated transcript, worker result and each offered transcript
+have **separate fixed-capacity storage**. `clipboard.zig` owns the bounded serving
+state used by native Wayland and by the deterministic test I/O adapter. Starting,
+restarting, preparing or failing a session never proactively clears the previous
+selection. Only successful finalization offers a complete new transcript.
+
+- Each publication creates a fresh ext-data-control source, used in exactly one
+  `set_selection` request. Its bytes stay immutable while source-owned **or**
+  reader-pinned. Replacement/external takeover delivers `cancelled`: destroy the
+  source then, but retain any bytes still needed by already requested transfers.
+  Clear/reuse a slot only after both ownership and its last reader are gone.
+  No transcript history, recovery copy, or incremental publication is retained.
+- Every accepted `send` owns one descriptor, offset and idle deadline in the
+  fixed transfer table. One event-loop turn attempts **at most one 65,536-byte
+  write per reader**, without a draining loop. Short writes advance only that
+  reader; EAGAIN/EINTR and zero writes do not extend its deadline. Positive write
+  progress renews the five-second idle deadline. Check expiration **before**
+  trying another write, so a late writable event cannot resurrect an expired
+  request. A reader that keeps making progress can live longer; storage and work
+  per turn remain bounded, not the total time of a progressing transfer.
+- Only pipes and sockets are accepted as transfer sinks: `O_NONBLOCK` cannot
+  prevent regular-file/device writes from blocking. Preserve existing fd flags
+  when setting it. Unsupported MIME/sinks, preparation errors and full transfer
+  tables close the new fd without affecting the source, other readers or capture.
+  Fatal write errors (including disconnected readers), timeout and shutdown close
+  the transfer and drop its pin. SIGPIPE is ignored by the daemon.
+- A failed/expired reader may receive a prefix already written into its pipe,
+  then EOF: this is an unsuccessful **transfer**, not publication of a truncated
+  transcript. The current offer remains complete and another reader may retry.
+  Wayland has no transfer-success or publication acknowledgement; session success
+  means a valid selection request was queued without a known failure, not that
+  another application pasted. A transport failure is fatal, not recoverable proof
+  that the compositor still owns the previous selection.
+- A full source table (including cancelled but reader-pinned offers, or sources
+  still awaiting cancellation) rejects publication with failure feedback. Do not
+  evict an old reader/selection, grow storage, truncate, or claim copy success.
+  Source-creation/known selection errors also fail publication and release the
+  candidate slot. Request cleanup permits later sessions to publish normally.
+
+External clipboard managers may retain text independently; the application does
+not provide or control their history. Native protocol lifetimes were checked
+against pinned wayland-protocols 1.49's ext-data-control XML.
 
 ## Static storage and allocation audit
 
@@ -283,6 +322,9 @@ and an explicitly supplied worker stack. Read-only literals/protocol tables and
 executable code are not mutable workspaces.
 
 Run the **built binary** with `footprint` to inspect the total and components.
+`clipboard_bytes`, `clipboard_offer_bytes` and `clipboard_transfer_bytes` expose
+the actual serving aggregate and its tables (including padding), all already
+included in `wayland_bytes` and `static_bytes`; do not add them again.
 `retained_inference_windows=1`, `replacement_audio_windows=audioWindows-1` and
 `operation_bytes=16` expose restart headroom and identity size. The typed aggregate
 counts all instances: session counters and optional in-flight identity, the
@@ -291,7 +333,8 @@ when fixture mode is unused. No additional event queue or worker is created.
 The worker stack is already included in `static_bytes`; do not add it twice.
 Main-thread application stack is separately budgeted conservatively at **16 KiB**,
 not compiler-certified: fixed integer formatting (65 bytes plus a 32-byte writer),
-C SPA format/parser structs, socket credentials, syscall temporaries and the
+C SPA format/parser structs, socket credentials, a fixed `stat` for clipboard
+sink validation, syscall temporaries and the
 4,111-byte `std.debug.FullPanic` buffer dominate our reachable paths. Worker-side
 application frames are bounded similarly; the configured stack also accommodates
 native inference call frames. Native libraries' own threads/stacks remain external.
@@ -370,6 +413,7 @@ nix build .#cpu.passthru.tests.native-smoke --no-link -L
 nix build .#cpu.passthru.tests.capture-inference --no-link -L
 nix build .#cpu.passthru.tests.streaming --no-link -L
 nix build .#cpu.passthru.tests.restart --no-link -L  # explicit test-only decoder substitution
+nix build .#cpu.passthru.tests.clipboard --no-link -L # real controlled Wayland readers; adapted decoder
 nix build .#cpu.passthru.tests.sizing --no-link -L
 nix build .#cpu.passthru.tests.model-failure --no-link -L
 nix build .#cpu.passthru.tests.backend-fallback --no-link -L
@@ -428,7 +472,16 @@ checks retained PCM, fresh default-source selection, cancellation-flag reset,
 serialized replacement decoding and one final publication. Model loading/state
 allocation remain real, but this establishes neither recognition nor real
 whisper/GPU cancellation latency. The interposer/gate are absent from production
-packages and module settings. `sizing` compares actual default and
+packages and module settings. `clipboard` likewise uses real model loading,
+native PipeWire capture and headless Sway, with **explicitly interposed decoding**
+that supplies distinct 128 KiB results behind a test-owned completion gate. Real
+ext-data-control readers request into 4 KiB pipes: the test controls slow progress,
+concurrency, disconnect and complete stalls while recording/decoding continue.
+It also uses ordinary `wl-paste`/`wl-copy`, exercises external takeover, full
+source/transfer tables and reuse, and checks that old readers receive unmixed old
+text. The helper, synthetic audio, large result generator and gate are test-only;
+this is neither real recognition nor target-desktop/GPU latency evidence.
+`sizing` compares actual default and
 small installed binaries. `model-failure` verifies an intentionally missing model
 with real native startup: no capture, no fixture fallback, no clipboard replacement.
 `backend-fallback` deliberately pairs the real CPU-only library with a daemon
@@ -629,3 +682,61 @@ Executed on **aarch64-linux**, retaining **Zig 0.17.1**, CUDA 12.9 and architect
 
 No NVIDIA hardware, physical microphone, target-desktop quality or latency claim
 is made. Those acceptance checks remain milestone 09.
+
+### Recorded milestone-06 verification
+
+Executed on **aarch64-linux** with **Zig 0.17.1**:
+
+- All **28 standard Zig tests** passed directly and through `zig build test`,
+  including the production clipboard server behind controlled protocol/pipe I/O.
+  Public-session tests cover concurrent short reads through recording/background
+  inference/finalization, unmixed old/new text, external takeover, publication
+  failures, exact capacity, source/transfer exhaustion, interruption/disconnect,
+  expiry at the deadline, shutdown and repeated reuse. A focused I/O test checks
+  the configured full transcript capacity and per-turn write budget. Fast tests
+  use no desktop, audio server, model, GPU, network or sleeps.
+- ReleaseSafe development compilation and Zig/Nix formatting passed. Installed
+  default CUDA and CPU packages (default, installation example, small and
+  integration sizing) ran the same 28 tests in the unchanged
+  standard-runner-only `checkPhase`. Building CUDA did not execute NVIDIA inference.
+- Separate `module-config`, `sizing`, `native-smoke`, `capture-inference`,
+  `streaming`, `restart` and **`clipboard`** checks actually passed. Real CPU
+  recognition was executed independently of the explicitly substituted decoders
+  in restart/clipboard tests. The clipboard consumer passed twice, with the
+  second run additionally asserting exact-capacity results: five sessions each
+  produced two 128 KiB chunks; one publication was safely rejected while an old
+  reader pinned the only spare source slot. Later publication succeeded after
+  cleanup. Real readers verified complete old/new bytes, external takeover,
+  rejected excess requests/unsupported sinks, disconnected/stalled readers,
+  timeout and reuse. The initial test harness needed `pw-cat --raw` for its raw
+  PCM input; no production fallback or weakened assertion was used.
+- Allocation/lifetime and undefined-symbol review found no application allocator
+  path. Serving uses typed arrays, slices, bounded scalar state and direct
+  syscalls; native source/proxy allocation remains inside genuine libwayland.
+  Clipboard callbacks carry the stable Desktop pointer, not an additional copy
+  of application data. The fixed `stat` syscall scratch stays within the existing
+  conservative **16 KiB** main-stack budget; Wayland pixel backing is unchanged
+  at **51,200 bytes**, separately mapped/unmapped, never used for transcripts.
+
+Measured installed layouts (bytes; whole storage aligned to 65,536):
+
+| Component | Default CPU sizing | Small sizing | Clipboard integration sizing |
+| --- | ---: | ---: | ---: |
+| Whole `Storage` | 19,529,728 | 1,179,648 | 10,092,544 |
+| Clipboard aggregate | 3,146,056 | 208 | 524,448 |
+| Offer table, including text and metadata | 3,145,800 | 176 | 524,352 |
+| Transfer table | 256 | 32 | 96 |
+| Wayland aggregate, including clipboard | 3,146,216 | 368 | 524,608 |
+
+Existing `transcriptBytes`, `clipboardSlots` and `transfers` settings still feed
+both package and module; no new sizing knob, hidden reserve, queue, growing copy
+or application heap was added. The whole-program total includes the clipboard
+subcomponents above and padding; they are not additional memory totals.
+
+Standards/spec **self-review** against parent `b665852e` found no blocking issues;
+no independent reviewer was available. Only test-side C helpers/interposition
+were extended: production C glue, dependency/compiler pins and the session state
+machine were not migrated or cleaned up. The NixOS VM was not rerun for 06.
+Physical-desktop focus/latency, real microphone, sustained target-GPU throughput
+and recognition quality remain **09**; broader recovery is **07**, reactive
+multi-monitor feedback **08**, and cleanup **10** last.
