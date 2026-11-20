@@ -41,8 +41,11 @@ The service has `WantedBy` and `PartOf` on `graphical-session.target`, `Wants` a
 **Ordering after PipeWire is not microphone readiness.** The application still
 resolves the current default source when recording begins and refuses capture
 when none is available. Model readiness is separate again: wait for
-`model ready (CUDA required)` (or the explicitly selected CPU equivalent).
-A systemd `active` state does not mean a model has loaded successfully.
+`model ready (GPU requested; CPU fallback allowed)` (or the explicitly selected
+CPU equivalent).
+GPU initialization may fall back to CPU with a warning; readiness is not proof of
+CUDA execution. A systemd `active` state does not mean a model has loaded
+successfully.
 
 ## The desktop owns the session
 
@@ -140,8 +143,9 @@ An absolute **string** stays a host path, read by the service user; the module
 does not create/chown/download that file. A Nix path or model derivation is
 provisioned into the store. Do not put private data in Nix paths expecting the
 store to keep it secret. Neither form creates a runtime download path. An
-unreadable/incompatible model leaves the application failed, with no automatic
-CPU/model fallback and no microphone activity. Restart after repairing the file.
+unreadable/incompatible model leaves the application failed, with no model or
+fixture substitution and no microphone activity. GPU unavailability separately
+allows upstream CPU fallback with a warning. Restart after repairing the file.
 
 All twelve sizing options above have the same names as package arguments. Module
 sizing is authoritative over the base package's sizing overrides. Changing it or

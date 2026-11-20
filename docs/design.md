@@ -40,6 +40,11 @@ Status: product design and test seam confirmed, including configurable static-st
 - Produce straightforward prose with Whisper's punctuation. Do not add a rewriting model, automatic code formatting, or editing voice commands. Technical vocabulary hints are not required for v1.
 - The target desktop has an NVIDIA GeForce RTX 3090 with 24,576 MiB VRAM. The user reports driver 615.78.08 and CUDA UMD version 13.4; those do not select the project's build-toolkit version.
 - The user delegated choosing an initial model rather than conducting an extensive model comparison. Start with large-v3-turbo, configured to transcribe English, using the CUDA backend. Keep model selection configurable. Validate actual throughput and peak inference memory on the target machine rather than promising performance from the GPU specification alone.
+- GPU initialization is not a fail-closed requirement: allow upstream CPU fallback
+  and log a sanitized warning rather than patching whisper.cpp to forbid it.
+  Readiness must not claim CUDA execution merely because GPU use was requested.
+  Missing/incompatible models still fail; do not silently switch models or use
+  fixture output. Use nixpkgs' `whisper-cpp` rather than maintaining a parallel build.
 
 ### Audio and indicator
 

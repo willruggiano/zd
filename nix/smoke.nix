@@ -2,6 +2,7 @@
   lib,
   runCommand,
   stdenv,
+  pkg-config,
   sway-unwrapped,
   wl-clipboard,
   python3,
@@ -14,14 +15,22 @@
   withStreamingTest ? false,
   withRestartTest ? false,
   expectModelFailure ? false,
+  expectGpuFallback ? false,
 }:
 let
   restartAdapter =
-    runCommand "dictation-test-restart-inference" { nativeBuildInputs = [ stdenv.cc ]; }
+    runCommand "dictation-test-restart-inference"
+      {
+        nativeBuildInputs = [
+          stdenv.cc
+          pkg-config
+        ];
+        buildInputs = [ package.whisperLibrary ];
+      }
       ''
         mkdir -p "$out/lib"
         $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared -DDICTATION_TEST_RESTART \
-          -I${package.whisperLibrary}/include ${./test-inference.c} \
+          $(pkg-config --cflags-only-I whisper llama) ${./test-inference.c} \
           -o "$out/lib/libtest-inference.so"
       '';
 in
@@ -29,6 +38,8 @@ runCommand
   (
     if expectModelFailure then
       "dictation-model-failure"
+    else if expectGpuFallback then
+      "dictation-native-backend-fallback"
     else if withRestartTest then
       "dictation-native-restart-adapted"
     else if withStreamingTest then
@@ -124,7 +135,7 @@ runCommand
       else if withRestartTest then
         "python3 ${./restart-smoke.py} ${package}/bin/dictation ${whisper-cpp.src}/samples/jfk.wav"
       else if withCaptureTest then
-        "python3 ${./audio-smoke.py} ${package}/bin/dictation ${whisper-cpp.src}/samples/jfk.wav ${lib.optionalString withStreamingTest "--streaming"}"
+        "python3 ${./audio-smoke.py} ${package}/bin/dictation ${whisper-cpp.src}/samples/jfk.wav ${lib.optionalString withStreamingTest "--streaming"} ${lib.optionalString expectGpuFallback "--gpu-fallback"}"
       else
         "python3 ${./smoke.py} ${package}/bin/dictation"
     }

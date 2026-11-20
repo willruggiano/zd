@@ -9,7 +9,8 @@ import sys
 import time
 
 binary, speech = sys.argv[1:3]
-streaming = sys.argv[3:] == ["--streaming"]
+streaming = "--streaming" in sys.argv[3:]
+gpu_fallback = "--gpu-fallback" in sys.argv[3:]
 
 
 def run(*args):
@@ -54,7 +55,13 @@ def toggle():
 
 
 eventually(lambda: node("test-mic-a") and node("test-mic-b"))
-eventually(lambda: "model ready (explicit CPU build)" in log())
+if gpu_fallback:
+    eventually(lambda: "model ready" in log() or "ModelBackendInitialization" in log())
+    assert "model ready (GPU requested; CPU fallback allowed)" in log()
+    assert "GPU backend unavailable; allowing CPU fallback" in log()
+    assert "ModelBackendInitialization" not in log()
+else:
+    eventually(lambda: "model ready (explicit CPU build)" in log())
 duplicate = subprocess.run([binary, "daemon"], capture_output=True, timeout=10)
 assert duplicate.returncode == 1 and b"ControlAlreadyRunning" in duplicate.stderr
 assert node("dictation.capture") is None

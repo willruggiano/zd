@@ -116,7 +116,7 @@ fn daemon() !void {
                 .loaded => {
                     storage.worker.release();
                     storage.session.modelLoaded(true, &effects);
-                    platform.diagnostic(if (options.cuda) "dictation: model ready (CUDA required)\n" else "dictation: model ready (explicit CPU build)\n");
+                    platform.diagnostic(if (options.cuda) "dictation: model ready (GPU requested; CPU fallback allowed)\n" else "dictation: model ready (explicit CPU build)\n");
                 },
                 .load_failed => if (!storage.model_reported) {
                     storage.model_reported = true;

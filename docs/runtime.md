@@ -14,7 +14,7 @@ On a supporting Wayland desktop with PipeWire, WirePlumber and an NVIDIA driver:
 ```sh
 nix build                         # CUDA + hash-pinned large-v3-turbo
 ./result/bin/dictation daemon     # load once, then remain resident
-# Wait for "model ready (CUDA required)". From another terminal/shortcut:
+# Wait for "model ready (GPU requested; CPU fallback allowed)". From another terminal/shortcut:
 ./result/bin/dictation toggle     # open the current default microphone
 # Speak; decoding proceeds in the background.
 ./result/bin/dictation toggle     # close microphone, finalize, copy
@@ -23,8 +23,10 @@ wl-paste --no-newline
 ```
 
 The default CUDA build accepts NVIDIA's unfree toolkit dependencies through the
-flake's Nixpkgs configuration. It requires the host NVIDIA driver libraries
-(`/run/opengl-driver/lib` on NixOS). The application itself is MIT licensed.
+flake's Nixpkgs configuration. GPU execution needs the host NVIDIA driver libraries
+(`/run/opengl-driver/lib` on NixOS). Upstream may fall back to CPU when GPU
+initialization is unavailable; a sanitized warning makes this visible. The
+application itself is MIT licensed.
 `nix build .#cpu` explicitly selects **CPU + tiny.en**, for integration testing or
 experimentation, not a silent substitute for the default GPU/model. It performs
 real capture and recognition and identifies itself as a CPU build in diagnostics.
@@ -73,18 +75,31 @@ thread, so clipboard serving and toggles remain responsive.
 
 `flake.lock` retains **Zig 0.17.1**, explicitly selected from Mitchell Hashimoto's
 overlay, and Nixpkgs `d3b13ad75cc492690728f9307e443dec9ef9a20e`.
-Pinned APIs used here are PipeWire **1.6.9**, whisper.cpp **1.9.5** (bundled ggml),
+Pinned APIs used here are PipeWire **1.6.9**, whisper.cpp **1.9.5** (ggml supplied by
+nixpkgs' llama-cpp **0.7.0**),
 Wayland **1.26.0**, wayland-protocols **1.49**, and wlr-protocols **2022-09-05**.
 The CUDA build deliberately selects `cudaPackages_12_9` (nvcc **12.9.86**) and
-compute capability **86**, suitable for the RTX 3090. This is a build-toolkit
+compute capability **8.6** (CMake architecture **86**), suitable for the RTX 3090. This is a build-toolkit
 choice, not the user's reported driver/UMD version.
 
-`nix/whisper.nix` builds the native shared libraries without example applications,
-SDL or FFmpeg. GPU architecture detection at build time is disabled. A small
-fail-closed patch makes `use_gpu=true` return initialization failure if the GPU
-backend cannot initialize: upstream otherwise permits CPU fallback. It uses the
-existing empty-backend failure path and does not alter library allocation.
-An explicit CPU build passes `use_gpu=false`; it is never selected automatically.
+`nix/whisper.nix` is a small override of nixpkgs' **`whisper-cpp`**, not a separate
+build recipe. It adds no local Whisper source patches, selects CUDA support/toolkit
+and disables the optional SDL/FFmpeg integrations. Nixpkgs owns the shared-library packaging,
+examples, compiler settings and its system llama.cpp/ggml dependency. The flake's
+`cudaCapabilities = [ "8.6" ]` selects the target architecture through nixpkgs.
+The daemon calls ggml's normal backend loader before initializing Whisper, as
+required by nixpkgs' dynamically loaded backends. Its current `whisper.pc` omits
+ggml's library directory, so the consumer also uses `llama.pc` for the system
+ggml include/link paths and records that library directory in the installed RPATH.
+
+GPU use is a **preference**, not a fail-closed policy. Pinned upstream's “no GPU
+found” or GPU initialization failure diagnostics produce the fixed warning
+`GPU backend unavailable; allowing CPU fallback`. Other library strings stay
+suppressed to avoid leaking dictated content or paths. Warnings can repeat when
+native decoder state is recreated. Readiness reports a GPU *request*, never proof
+of CUDA execution. Upstream initialization errors still fail normally if no usable
+backend/model can be initialized. The model is not silently changed, and fixture
+mode is never an automatic fallback. An explicit CPU build passes `use_gpu=false`.
 
 `nix/models.nix` fetches immutable Hugging Face revision
 `5359861c739e955e79d9a303bcbc70fb988958b1` of
@@ -336,6 +351,10 @@ Captured audio is transient; no recordings, transcript history, or content logs
 are created. Application clearing is a retention policy, not forensic erasure
 of every copy in dependencies or external clipboard managers.
 
+The backend loader and upstream plugin/registry allocation are genuine dependency
+internals, not application storage moved behind a wrapper. Backend-warning
+classification uses only borrowed strings and fixed diagnostic literals.
+
 ## Development and checks
 
 ```sh
@@ -353,7 +372,15 @@ nix build .#cpu.passthru.tests.streaming --no-link -L
 nix build .#cpu.passthru.tests.restart --no-link -L  # explicit test-only decoder substitution
 nix build .#cpu.passthru.tests.sizing --no-link -L
 nix build .#cpu.passthru.tests.model-failure --no-link -L
-nix build .#cpu.passthru.tests.backend-required --no-link -L
+nix build .#cpu.passthru.tests.backend-fallback --no-link -L
+```
+
+On a RAM-constrained host, keep CUDA builds separate from VM checks. To release
+evaluator memory before compiling a fresh dependency stack:
+
+```sh
+drv=$(nix eval --raw .#default.drvPath)
+nix build "$drv^out" --no-link -L --max-jobs 1 --cores 1
 ```
 
 Native builds alone are supported on aarch64-linux and x86_64-linux. The package's
@@ -365,8 +392,9 @@ The development shell generates protocol/C bindings and rewrites `src/options.zi
 to development defaults: explicit CPU backend and `/var/lib/dictation/model.bin`.
 For a readily provisioned runnable CPU package use `nix build .#cpu`; do not infer
 that a successful development build loaded a model. The build graph downloads no
-dependencies. If this workspace's `_gateway` proxy causes Zig's build runner to
-report `InvalidHostName`, use `env -u https_proxy -u HTTPS_PROXY zig build` for the
+dependencies. After changing native dependencies, remove `generated/c.zig` to
+regenerate development bindings against their headers. If this workspace's
+`_gateway` proxy causes Zig's build runner to report `InvalidHostName`, use `env -u https_proxy -u HTTPS_PROXY zig build` for the
 offline build-graph commands.
 
 The package deliberately obtains the Nix libc configuration with `zig libc`,
@@ -403,9 +431,10 @@ whisper/GPU cancellation latency. The interposer/gate are absent from production
 packages and module settings. `sizing` compares actual default and
 small installed binaries. `model-failure` verifies an intentionally missing model
 with real native startup: no capture, no fixture fallback, no clipboard replacement.
-`backend-required` deliberately pairs the real CPU-only library with a daemon
-configured to require GPU initialization: readiness/capture must be refused, not
-silently switched to CPU. This validates the failure policy, not a CUDA device.
+`backend-fallback` deliberately pairs the real CPU-only library with a daemon
+requesting GPU use: it must warn, become ready and actually transcribe the virtual
+microphone input using CPU. This validates upstream fallback and sanitized logging,
+not a CUDA device. It replaces the historical `backend-required` consumer.
 Allocation/source review is separate from all fast tests.
 
 
@@ -452,6 +481,10 @@ focus/click-through and recognition quality/latency remain pending milestone 09.
 This historical milestone-02 evidence does not cover streaming (04), asynchronous
 restart (05), broader recovery (07) or reactive UI (08). Milestone 03 installation evidence is recorded in the
 [installation guide](installation.md).
+
+The milestone records describe their original builds. Their former
+`backend-required` checks and custom Whisper library are historical; the current
+policy permits upstream CPU fallback with a warning and uses nixpkgs packaging.
 
 ### Recorded milestone-04 verification
 
@@ -566,3 +599,33 @@ privacy requirements are implemented and exercised through the public seam.
 No blocking findings remain. Real GPU preemption timing, physical-desktop restart
 latency and broader failure recovery are not claimed: they remain 09 and 07.
 Both reviews were local self-reviews; no independent sub-agent tool was available.
+
+### Recorded nixpkgs Whisper migration verification
+
+Executed on **aarch64-linux**, retaining **Zig 0.17.1**, CUDA 12.9 and architecture
+86; this supersedes the former GPU fail-closed policy:
+
+- Default CUDA and explicit CPU packages built; their standard **23 tests** passed.
+  Regenerated development bindings, formatting checks, `zig build test` and the
+  ReleaseSafe development build also passed.
+- Separate `backend-fallback`, `capture-inference`, `streaming`, `restart`,
+  `model-failure`, `native-smoke`, `module-config` and `sizing` consumers passed.
+  The fallback consumer requested GPU use with the real CPU library, observed the
+  fixed warning and readiness diagnostic, then recognized actual virtual-microphone
+  speech without logging its text. Restart still uses an explicit test-only decoder.
+- The actual installed-session **TCG VM passed** (about **620 seconds**) with real
+  model loading and explicitly substituted decode. This is session integration
+  evidence, not CUDA execution or recognition-quality evidence.
+- An initial aggregate build exhausted this host's memory in upstream llama.cpp's
+  web-UI build. Building the already evaluated CUDA derivation in isolation with
+  one job/core succeeded without changing dependency packaging; CPU/VM checks ran
+  separately afterward. Final aggregates reused successful outputs.
+- Allocation/lifetime and standards/spec **self-review** found no new application
+  allocation or storage: backend loading is genuine dependency initialization;
+  logging only examines borrowed messages and writes fixed literals. Its worker
+  userdata remains statically allocated, and backend preference is immutable after
+  thread creation. Default static storage remains **19,529,728 bytes**. There was
+  no independent reviewer available.
+
+No NVIDIA hardware, physical microphone, target-desktop quality or latency claim
+is made. Those acceptance checks remain milestone 09.
