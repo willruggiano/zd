@@ -12,6 +12,7 @@ physical-desktop results.
 
 ## Reports
 
+- [Native binding dependency review](#native-binding-dependency-review)
 - [PipeWire glue cleanup](#pipewire-glue-cleanup)
 - [Zig-owned Wayland build](#zig-owned-wayland-build)
 - [Wayland binding migration](#wayland-binding-migration)
@@ -24,6 +25,47 @@ physical-desktop results.
 - [04: streaming](#recorded-milestone-04-verification)
 - [03: installed session](#recorded-milestone-03-verification)
 - [02: native capture/inference](#recorded-milestone-02-verification)
+
+## Native binding dependency review
+
+The review selected upstream `translate-c` 2.0.2 and protocol XML archives as manifest dependencies.
+The XML inputs matched the existing Wayland, wayland-protocols and wlr-protocols package inputs byte-for-byte.
+The graph retained system native libraries rather than duplicating their build configurations.
+This preserved PipeWire module loading and the selected whisper.cpp/ggml CUDA toolchain.
+Models remained package inputs, not Zig code dependencies.
+
+- The external translator built the complete application in an isolated probe.
+  Optimized C preprocessing exposed unsupported fortified glibc wrappers. The upstream tool also required explicit zero-initialization defaults.
+  The final configuration preserved unoptimized C preprocessing and optimized the generated Zig with the application.
+- After comment and helper-import normalization, the native probe's C declarations and inline bodies matched the earlier translation.
+  Compiler predefines differed. The runtime helper review found only a standard-library alias change.
+  These comparisons did not replace installed ABI checks.
+- Two normal dependency fetches failed at Codeberg's Git endpoint for the pinned transitive Aro dependency.
+  A scratch-only fetcher override supplied the exact archive that the earlier probe had fetched and verified.
+  Other dependencies used their declared URLs. The resulting fixed-output cache supplied subsequent builds.
+  The production fetcher and dependency pins had no transport override.
+  A later unmodified `zig.fetchDeps` rebuild fetched all dependencies successfully and verified the same fixed-output hash.
+- Standalone `zig fetch` computed correct hashes for local archives but cached an extra directory level under Zig 0.17.1.
+  Normal `zig build --fetch` produced usable cache archives. No project cache-rewrite mechanism was added.
+- Development builds passed without `generated/c.zig` or system protocol pkg-config entries.
+  Direct execution passed all 38 standard tests. `zig build test` also passed.
+- A separate probe compiled complete aarch64 and x86_64 application objects through the application build graph.
+  Both generated Wayland sources matched the previous output byte-for-byte.
+  These object checks did not link or execute the application.
+- The x86_64 CPU/default derivations and development hook evaluated successfully; the hook passed `bash -n`.
+- A clean-copy build passed with empty local package/build directories, prefetched archives and unreachable HTTPS proxies.
+  A temporary header change caused new C translation. No prepared bindings or system XML packages were present.
+- All thirteen selected consumers executed successfully:
+  `capture-inference`, `streaming`, `restart`, `recovery-pipewire`, `recovery-capacity`, `native-smoke`,
+  `indicator`, `clipboard`, `recovery-wayland`, `backend-fallback`, `model-failure`, `sizing` and `module-config`.
+  The [named-test catalog](testing.md) defines their fixture and decoder substitutions.
+  Native package checks also passed all 38 standard tests.
+- CPU and CUDA-linked packages built. The TCG session VM passed with substituted decoding; its script took 619.17 seconds.
+  No GPU execution or physical-desktop acceptance occurred.
+- The installed footprint remained 19,529,728 bytes with 65,536-byte alignment.
+  Interpreter, native dependencies, RUNPATH, generator licenses and XML notices were checked.
+  No undefined `malloc`, `calloc` or `realloc` symbols appeared.
+  The helper comparison found no added allocation path; native library ownership remained unchanged.
 
 ## PipeWire glue cleanup
 

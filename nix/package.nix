@@ -8,9 +8,6 @@ in
   zig,
   pkg-config,
   wayland,
-  wayland-scanner,
-  wayland-protocols,
-  wlr-protocols,
   pipewire,
   cudaSupport ? true,
   modelPath ? (callPackage ./models.nix { }).large-v3-turbo,
@@ -49,14 +46,11 @@ stdenv.mkDerivation (finalAttrs: {
   };
   zigDeps = zig.fetchDeps {
     inherit (finalAttrs) src pname version;
-    hash = "sha256-OuL4uLzhNt31hDugu5YUVYaRbB3vjrkPmSXv63bRhF0=";
+    hash = "sha256-XHAyk1B7VyWIcaM7cdNAOn5fgZJSf2pj4iSGxV0hds8=";
   };
   nativeBuildInputs = [
     zig
     pkg-config
-    wayland-scanner
-    wayland-protocols
-    wlr-protocols
   ];
   buildInputs = [
     wayland
@@ -64,18 +58,11 @@ stdenv.mkDerivation (finalAttrs: {
     whisperLibrary
   ];
   dontConfigure = true;
-  # PipeWire also advertises flags that zig translate-c cannot accept. Pass only
-  # pkg-config's include-directory flags when generating bindings.
   postPatch = ''
-    mkdir -p generated
     export ZIG_GLOBAL_CACHE_DIR=$PWD/.zig-cache/global
     # Zig 0.17 uses cached archives; --system instead requires unpacked trees.
     mkdir -p "$ZIG_GLOBAL_CACHE_DIR/p"
     cp -r --no-preserve=mode ${finalAttrs.zigDeps}/. "$ZIG_GLOBAL_CACHE_DIR/p/"
-    if [ ! -s generated/c.zig ] || [ src/interop.h -nt generated/c.zig ]; then
-      zig translate-c -lc $(pkg-config --cflags-only-I wayland-client libpipewire-0.3 whisper llama) src/interop.h > generated/c.zig.tmp &&
-      mv generated/c.zig.tmp generated/c.zig
-    fi
     cat > src/options.zig <<'EOF'
     pub const transcript_bytes: usize = ${toString transcriptBytes};
     pub const control_clients: usize = ${toString controlClients};
@@ -99,9 +86,10 @@ stdenv.mkDerivation (finalAttrs: {
   buildPhase = ''
     runHook preBuild
     export ZIG_GLOBAL_CACHE_DIR=$PWD/.zig-cache/global
+    mkdir -p generated
     zig libc > generated/libc.conf
     zig build -j$NIX_BUILD_CORES \
-      --libc generated/libc.conf -Doptimize=ReleaseSafe \
+      -Dlibc=generated/libc.conf -Doptimize=ReleaseSafe \
       -Dtarget=${stdenv.hostPlatform.parsed.cpu.name}-linux-gnu \
       -Ddynamic-linker=${stdenv.cc.bintools.dynamicLinker} \
       -Dallow-shlib-undefined=${lib.boolToString cudaSupport}

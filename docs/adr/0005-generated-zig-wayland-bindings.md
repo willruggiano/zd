@@ -2,7 +2,7 @@
 
 Use `zig-wayland` to generate typed protocol bindings from the pinned Wayland XML files.
 Keep libwayland as the native client library.
-The [Zig manifest](../../build.zig.zon) owns the generator pin.
+The [Zig manifest](../../build.zig.zon) owns the generator and protocol XML pins.
 The [Zig build graph](../../build.zig) owns protocol selection, generation and application compilation.
 It uses the upstream `Scanner` build API.
 Both package and development builds use that graph.
