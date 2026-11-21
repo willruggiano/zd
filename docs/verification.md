@@ -12,6 +12,10 @@ physical-desktop results.
 
 ## Reports
 
+- [Native binding dependency review](#native-binding-dependency-review)
+- [PipeWire glue cleanup](#pipewire-glue-cleanup)
+- [Zig-owned Wayland build](#zig-owned-wayland-build)
+- [Wayland binding migration](#wayland-binding-migration)
 - [Zig research and devshell](#zig-research-and-devshell-verification)
 - [08: multi-monitor feedback](#recorded-milestone-08-verification)
 - [07: recovery](#recorded-milestone-07-verification)
@@ -21,6 +25,153 @@ physical-desktop results.
 - [04: streaming](#recorded-milestone-04-verification)
 - [03: installed session](#recorded-milestone-03-verification)
 - [02: native capture/inference](#recorded-milestone-02-verification)
+
+## Native binding dependency review
+
+The review selected upstream `translate-c` 2.0.2 and protocol XML archives as manifest dependencies.
+The XML inputs matched the existing Wayland, wayland-protocols and wlr-protocols package inputs byte-for-byte.
+The graph retained system native libraries rather than duplicating their build configurations.
+This preserved PipeWire module loading and the selected whisper.cpp/ggml CUDA toolchain.
+Models remained package inputs, not Zig code dependencies.
+
+- The external translator built the complete application in an isolated probe.
+  Optimized C preprocessing exposed unsupported fortified glibc wrappers. The upstream tool also required explicit zero-initialization defaults.
+  The final configuration preserved unoptimized C preprocessing and optimized the generated Zig with the application.
+- After comment and helper-import normalization, the native probe's C declarations and inline bodies matched the earlier translation.
+  Compiler predefines differed. The runtime helper review found only a standard-library alias change.
+  These comparisons did not replace installed ABI checks.
+- Two normal dependency fetches failed at Codeberg's Git endpoint for the pinned transitive Aro dependency.
+  A scratch-only fetcher override supplied the exact archive that the earlier probe had fetched and verified.
+  Other dependencies used their declared URLs. The resulting fixed-output cache supplied subsequent builds.
+  The production fetcher and dependency pins had no transport override.
+  A later unmodified `zig.fetchDeps` rebuild fetched all dependencies successfully and verified the same fixed-output hash.
+- Standalone `zig fetch` computed correct hashes for local archives but cached an extra directory level under Zig 0.17.1.
+  Normal `zig build --fetch` produced usable cache archives. No project cache-rewrite mechanism was added.
+- Development builds passed without `generated/c.zig` or system protocol pkg-config entries.
+  Direct execution passed all 38 standard tests. `zig build test` also passed.
+- A separate probe compiled complete aarch64 and x86_64 application objects through the application build graph.
+  Both generated Wayland sources matched the previous output byte-for-byte.
+  These object checks did not link or execute the application.
+- The x86_64 CPU/default derivations and development hook evaluated successfully; the hook passed `bash -n`.
+- A clean-copy build passed with empty local package/build directories, prefetched archives and unreachable HTTPS proxies.
+  A temporary header change caused new C translation. No prepared bindings or system XML packages were present.
+- All thirteen selected consumers executed successfully:
+  `capture-inference`, `streaming`, `restart`, `recovery-pipewire`, `recovery-capacity`, `native-smoke`,
+  `indicator`, `clipboard`, `recovery-wayland`, `backend-fallback`, `model-failure`, `sizing` and `module-config`.
+  The [named-test catalog](testing.md) defines their fixture and decoder substitutions.
+  Native package checks also passed all 38 standard tests.
+- CPU and CUDA-linked packages built. The TCG session VM passed with substituted decoding; its script took 619.17 seconds.
+  No GPU execution or physical-desktop acceptance occurred.
+- The installed footprint remained 19,529,728 bytes with 65,536-byte alignment.
+  Interpreter, native dependencies, RUNPATH, generator licenses and XML notices were checked.
+  No undefined `malloc`, `calloc` or `realloc` symbols appeared.
+  The helper comparison found no added allocation path; native library ownership remained unchanged.
+
+## PipeWire glue cleanup
+
+The review used Zig 0.17.1 and the packaged PipeWire 1.6.9 headers and libraries.
+It compared direct native calls with
+[`allyourcodebase/pipewire` at `a91b2b6`](https://github.com/allyourcodebase/pipewire/tree/a91b2b6a1f96cec8c6caad0f8948717d90d4834e).
+That candidate builds a static PipeWire 1.6.3 client and substitutes module loading and filesystem operations.
+Its source also compiles upstream SPA implementations to support translated declarations.
+The review did not build that candidate.
+The cleanup retained the packaged client and its dynamic module loading.
+The existing SPA library supplied the remaining helpers without a custom parser or POD implementation.
+
+- The development build and all 38 standard Zig tests passed on aarch64-linux.
+- Separate standard-runner probes passed for relaxed and escaped metadata names, missing names, and exact metadata and POD capacity boundaries.
+  SPA checks encoded token length against metadata capacity, not only decoded string length.
+- Architecture-specific C translation and complete application object compilation passed for aarch64-linux and x86_64-linux.
+  These object checks did not link or execute the application.
+- Source review covered the removed wrappers and their replacements, including initialization, callbacks, failure and teardown.
+  Generated interface calls retained borrowed userdata. POD construction retained caller storage without overflow allocation callbacks.
+  The change added no application allocation path or persistent workspace.
+  Parser and builder values remained bounded stack values within the existing source-reviewed budget.
+- The installed CPU footprint remained 19,529,728 bytes with 65,536-byte alignment.
+  ELF inspection confirmed the SPA dependency and its Nix library path.
+  Undefined-symbol inspection found no `malloc`, `calloc` or `realloc` reference.
+  That symbol check supplemented source review; it did not replace the allocation audit.
+- All thirteen selected consumers executed successfully:
+  `capture-inference`, `streaming`, `restart`, `recovery-pipewire`, `recovery-capacity`,
+  `native-smoke`, `indicator`, `clipboard`, `recovery-wayland`, `backend-fallback`,
+  `model-failure`, `sizing` and `module-config`.
+  Their package builds ran the 38 standard Zig tests; consumers reused shared package outputs.
+- Recovery consumers also checked malformed, missing, over-capacity, relaxed and escaped default-source metadata.
+  The final tests restored a valid default before each invalid value.
+  Separate reruns passed for the two consumers that preceded that stronger assertion.
+- An earlier run stopped at `pw-dump` during initial virtual-source discovery, before its capacity scenario.
+  The timeout did not recur in these runs. Its cause remained unconfirmed.
+  No timeout or assertion was relaxed to obtain these results.
+- The default CUDA-linked package built successfully. No GPU execution occurred.
+  The TCG installed-session VM booted and passed; its script completed in 641.47 seconds.
+- Fixture smoke substituted audio and inference.
+  Restart, clipboard, recovery and VM consumers substituted decoding while retaining real capture, model loading and Wayland.
+  Capture/inference and streaming consumers used real CPU recognition.
+  Indicator checks used synthetic PCM and headless Sway. Backend fallback used a CPU-only library.
+- The x86_64 CPU/default derivations and development hook evaluated successfully; the hook passed `bash -n`.
+  No x86_64 package link or native execution occurred.
+  Formatting and separate documentation checks also passed.
+
+These results do not establish physical-desktop or GPU acceptance.
+
+## Zig-owned Wayland build
+
+These checks used Zig 0.17.1 on aarch64-linux after generation moved into the Zig build graph.
+PipeWire cleanup remained separate from this change.
+
+- `zig.fetchDeps` fetched the manifest dependency and produced the fixed-output cache hash.
+  An initial `--system` attempt failed because that mode requires unpacked package directories, not Zig 0.17's cached archives.
+  The corrected setup populated Zig's normal global package cache.
+- Development builds passed with the upstream `Scanner` API.
+  A separate build used empty local package and build directories with an unreachable HTTPS proxy.
+  It completed from the prefetched global cache.
+- The generated Wayland source matched the previous generator output byte-for-byte.
+  This change added no runtime allocation path or application workspace.
+- All 38 standard Zig tests passed through a direct test invocation.
+  `zig build test` also passed; later invocations reused its cached test result.
+- Separate `native-smoke`, `capture-inference`, `indicator`, `clipboard`, `recovery-wayland`, `sizing` and `module-config` consumers passed.
+  These consumers executed. Their package builds ran the standard Zig suite in `checkPhase`.
+- The CPU and default CUDA-linked packages built through `zig build` in the Nix sandbox.
+  Native libraries and models came from existing dependencies. The builds did not rebuild the CUDA toolchain.
+  ELF inspection confirmed the installed CPU package's Nix interpreter and native-library paths.
+  The package included the upstream binding license.
+- The `session-vm-tcg` consumer booted and passed its installed-session checks.
+  The test script completed in 622.17 seconds.
+- `native-smoke` used fixture audio and inference.
+  `clipboard`, `recovery-wayland` and the VM substituted decoding, while preserving real capture, model loading and Wayland.
+  `capture-inference` exercised real CPU recognition. `indicator` used synthetic PCM and headless Sway.
+- The x86_64 CPU/default package derivations and development hook evaluated successfully.
+  The hook passed `bash -n`. No x86_64 package build or execution occurred.
+- Zig/Nix formatting and separate documentation link, anchor and fence checks passed.
+
+These results do not establish CUDA operation, physical-desktop behavior or target acceptance.
+
+## Wayland binding migration
+
+These checks used Zig 0.17.1 on aarch64-linux, before the separate PipeWire wrapper cleanup.
+The [binding decision](adr/0005-generated-zig-wayland-bindings.md) records the selected approach.
+
+- The pinned `zig-wayland` generator built and processed all required protocol XML files.
+  The package and development shell used the same generated output.
+- Separate probes compiled protocol requests, typed listeners and translated logging callbacks for aarch64-linux and x86_64-linux.
+  Neither probe exercised a desktop. The x86_64 result was compilation only, not a native package build or execution.
+- The ReleaseSafe development build passed. All 38 standard Zig tests passed.
+- Separate `native-smoke`, `indicator`, `clipboard`, `recovery-wayland`, `sizing` and `module-config` consumers passed.
+  These consumers executed; their results were not only derivation evaluations.
+  Native package `checkPhase` also ran the 38 Zig tests.
+- `native-smoke` used fixture audio and inference.
+  `clipboard` and `recovery-wayland` substituted decoding while keeping capture, model loading and Wayland real.
+  `indicator` used synthetic PCM and headless Sway. It checked pixels, output capacity, repeated output changes and backing release.
+- Source review traced generated requests and dispatchers through libwayland.
+  Arguments and event payloads use bounded stack values. Listener userdata borrows records in `Storage`.
+  Native proxy allocation remains inside libwayland. Wayland pixel backing remains the separate permitted mapping resource.
+  The executable had no undefined `malloc`, `calloc` or `realloc` symbol; source review supplied the allocation evidence.
+- Default development `static_bytes` remained 19,529,728 with alignment 65,536.
+  The sizing consumer also checked non-default storage.
+- The x86_64 CPU package and development hook evaluated successfully. The hook passed `bash -n` without execution.
+- Zig/Nix formatting and separate documentation link, anchor and fence checks passed.
+
+These checks did not run the session VM, CUDA, or physical-desktop acceptance.
 
 ## Zig research and devshell verification
 

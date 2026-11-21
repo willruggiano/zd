@@ -149,26 +149,27 @@ fn daemon() !void {
             storage.session.advance(&effects);
         }
         desktop.tick(now);
-        while (c.wl_display_prepare_read(desktop.display) != 0) {
-            if (c.wl_display_dispatch_pending(desktop.display) < 0) return error.WaylandDisconnected;
+        const display = desktop.display.?;
+        while (!display.prepareRead()) {
+            if (display.dispatchPending() != .SUCCESS) return error.WaylandDisconnected;
         }
-        const flushed = c.wl_display_flush(desktop.display);
-        if (flushed < 0 and platform.errno() != c.EAGAIN) {
-            c.wl_display_cancel_read(desktop.display);
+        const flushed = display.flush();
+        if (flushed != .SUCCESS and flushed != .AGAIN) {
+            display.cancelRead();
             return error.WaylandDisconnected;
         }
         storage.pollfds = .{
-            .{ .fd = c.wl_display_get_fd(desktop.display), .events = @intCast(c.POLLIN | @as(c_int, if (flushed < 0) c.POLLOUT else 0)), .revents = 0 },
+            .{ .fd = display.getFd(), .events = @intCast(c.POLLIN | @as(c_int, if (flushed == .AGAIN) c.POLLOUT else 0)), .revents = 0 },
             .{ .fd = server.listener, .events = c.POLLIN, .revents = 0 },
-            .{ .fd = if (storage.fixture) -1 else c.zd_loop_fd(storage.capture.loop), .events = c.POLLIN, .revents = 0 },
+            .{ .fd = if (storage.fixture) -1 else c.pw_loop_get_fd(storage.capture.loop), .events = c.POLLIN, .revents = 0 },
         };
         const polled = c.poll(&storage.pollfds, storage.pollfds.len, 20);
         if (polled > 0 and storage.pollfds[0].revents & c.POLLIN != 0) {
-            if (c.wl_display_read_events(desktop.display) < 0) return error.WaylandDisconnected;
-        } else c.wl_display_cancel_read(desktop.display);
+            if (display.readEvents() != .SUCCESS) return error.WaylandDisconnected;
+        } else display.cancelRead();
         if (polled < 0 and platform.errno() != c.EINTR) return error.EventLoop;
         if (storage.pollfds[0].revents & (c.POLLERR | c.POLLHUP) != 0) return error.WaylandDisconnected;
-        if (c.wl_display_dispatch_pending(desktop.display) < 0) return error.WaylandDisconnected;
+        if (display.dispatchPending() != .SUCCESS) return error.WaylandDisconnected;
     }
 }
 

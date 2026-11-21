@@ -1,0 +1,33 @@
+.{
+    .name = .dictation,
+    .version = "0.1.0",
+    .fingerprint = 0x4da9c4976c2d2559, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{
+        .translate_c = .{
+            .url = "https://codeberg.org/ziglang/translate-c/archive/c11030012dc325d446474d17b78c242fd1d622ec.tar.gz",
+            .hash = "translate_c-2.0.2-Q_BUWvBNBwBgPKQJPblip6M7AHNK_IPNPmyv4rSIQMQc",
+        },
+        .wayland_xml = .{
+            .url = "https://gitlab.freedesktop.org/wayland/wayland/-/releases/1.26.0/downloads/wayland-1.26.0.tar.xz",
+            .hash = "N-V-__8AAA46JQABKU7sa-6xGUAN44uFsYSUS_w79UVuu7qo",
+        },
+        .wayland_protocols = .{
+            .url = "https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/1.49/downloads/wayland-protocols-1.49.tar.xz",
+            .hash = "N-V-__8AAOTNEADZkChhsSciYizE4kIbZsozjDZXVeG5R_uY",
+        },
+        .wlr_protocols = .{
+            .url = "https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/archive/4264185db3b7e961e7f157e1cc4fd0ab75137568/wlr-protocols-4264185db3b7e961e7f157e1cc4fd0ab75137568.tar.gz",
+            .hash = "N-V-__8AABKyAQBpXwR9RQNLts35yERFRfaiIYhQV8IqjEW5",
+        },
+        .wayland = .{
+            .url = "https://codeberg.org/ifreund/zig-wayland/archive/fc7672f661874aa2015fc19a87ebabce787cf1c7.tar.gz",
+            .hash = "wayland-0.7.0-lQa1kuP8AQD5dW7_o-VKLVD_QbqXe7Zob78r2su7Pyex",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

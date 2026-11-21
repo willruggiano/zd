@@ -1,7 +1,7 @@
 #define _GNU_SOURCE 1
-#include <wayland-client.h>
-#include <layer.h>
-#include <control.h>
+// Keep the translated va_list callback ABI for sanitized libwayland logging.
+// Protocol objects and requests come from zig-wayland instead.
+#include <wayland-client-core.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/mman.h>
@@ -14,4 +14,9 @@
 #include <time.h>
 #include <stdlib.h>
 
-#include "native.h"
+#include <pipewire/pipewire.h>
+#include <pipewire/extensions/metadata.h>
+#include <spa/param/audio/format-utils.h>
+#include <spa/utils/json.h>
+#include <whisper.h>
+#include <pthread.h>

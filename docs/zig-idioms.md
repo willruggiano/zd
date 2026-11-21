@@ -2,7 +2,8 @@
 
 These findings use Zig 0.17.1.
 They guide review of runtime modules, tests, build code and native bindings.
-They do not select a Wayland dependency or represent a complete code audit.
+They do not represent a complete code audit.
+The separate [Wayland binding decision](adr/0005-generated-zig-wayland-bindings.md) selects the protocol generator.
 
 ## Sources
 
@@ -44,6 +45,7 @@ Treat older tutorials as explanations, not current API specifications.
 
    Do not add unnecessary namespace prefixes and unclear `Manager` or `Utils` wrappers.
    Use glossary terms instead of new names for the same domain concepts.
+   Project convention: keep upstream names when you alias imported namespaces.
    Use `zig fmt`.
    The style guide also recommends approximately 100-column lines and multiline
    lists with trailing commas. Formatting alone does not make complex code easy to read.
@@ -137,9 +139,8 @@ A standard-library linked list is not necessarily better than our small fixed sl
 - **C import:** Zig 0.17 removed `@cImport`.
   Its release notes also deprecate `std.Build.Step.TranslateC` in favor of the
   official external `translate-c` package.
-  This project still uses the bundled `zig translate-c` CLI.
-  Before a generator migration, evaluate Nix pinning, target/header consistency and real ABI coverage.
-  This research does not select a dependency change.
+  The [build graph](../build.zig) owns the selected generator configuration.
+  Before a generator change, evaluate dependency pinning, target/header consistency and real ABI coverage.
 - **Formatting:** Zig deprecated `std.fmt.bufPrint` in favor of `std.mem.print`.
   Allocating printing moved to `Allocator.print`.
   For a borrowed destination, use `std.Io.Writer.fixed` or `std.mem.print`.
